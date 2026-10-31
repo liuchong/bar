@@ -6,7 +6,7 @@ import BarCore
 
 @Suite("Drawer presentation")
 struct DrawerAppearanceIntegrationTests {
-    @Test @MainActor func menuLogoIsMonochromeAndUsesSystemTemplateTintInEveryState() throws {
+    @Test @MainActor func drawerStatesAreMonochromeAndHaveDistinctPullDirections() throws {
         var directionalMasks: [[UInt8]] = []
         for (expanded, paused, style) in [(false, false, ExpansionStyle.below), (true, false, .below),
                                          (true, false, .left), (false, true, .below)] {
@@ -34,7 +34,7 @@ struct DrawerAppearanceIntegrationTests {
         }
         #expect(directionalMasks.count == 2)
         let different = zip(directionalMasks[0], directionalMasks[1]).filter { abs(Int($0) - Int($1)) > 64 }.count
-        // Main arrow silhouettes must differ substantially, rather than just a tiny corner badge.
+        // Pull direction changes the whole drawer silhouette, rather than just a tiny corner badge.
         #expect(different > directionalMasks[0].count / 10)
     }
 

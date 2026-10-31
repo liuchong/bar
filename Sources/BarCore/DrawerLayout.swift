@@ -12,8 +12,9 @@ public enum DrawerLayout {
     /// The entire row stays below the system bar, including one physical pixel of clearance.
     public static func belowRow(width: CGFloat, screen: CGRect, anchor: CGRect,
                                 menuBarBottom: CGFloat, height: CGFloat, row: Int,
-                                backingScale: CGFloat) -> CGRect {
-        let x = max(screen.minX + 8, min(anchor.maxX - width, screen.maxX - width - 8))
+                                backingScale: CGFloat, side: ItemSide = .left) -> CGRect {
+        let proposedX = side == .left ? anchor.maxX - width : anchor.minX
+        let x = max(screen.minX + 8, min(proposedX, screen.maxX - width - 8))
         let top = menuBarBottom - 1 / max(1, backingScale) - CGFloat(row) * height
         return CGRect(x: x, y: top - height, width: width, height: height)
     }

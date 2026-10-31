@@ -9,8 +9,9 @@ final class BarController: NSObject, NSWindowDelegate {
     let status: NSStatusItem
     private var panels: [NSPanel] = []
     private var settings: NSWindow?
-    private var state = ExpansionState()
-    private var behavior: ExpansionBehavior
+    private var states: [ItemSide: ExpansionState] = [:]
+    private var columnBehaviors: [ItemSide: ExpansionBehavior] = [:]
+    private var expanded: Bool { states.values.contains { $0.expanded } }
     private var style: ExpansionStyle
     private var timer: Timer?
     private var subscriptions = Set<AnyCancellable>()
@@ -27,9 +28,13 @@ final class BarController: NSObject, NSWindowDelegate {
     init(model: AppModel) {
         self.model = model
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        behavior = model.configuration.behavior; style = model.configuration.style
+        style = model.configuration.style
         super.init()
-        state.configure(behavior)
+        for side in ItemSide.allCases {
+            let mode = model.configuration.behavior(for: side)
+            var state = ExpansionState(); state.configure(mode)
+            states[side] = state; columnBehaviors[side] = mode
+        }
         status.autosaveName = "Bar.Entry"
         if let button = status.button {
             button.image = Brand.menuIcon()
@@ -94,23 +99,26 @@ final class BarController: NSObject, NSWindowDelegate {
     @objc private func clicked() {
         if NSApp.currentEvent?.type == .rightMouseUp { showContextMenu(); return }
         guard model.trusted, !model.collected.isEmpty else { showSettings(); return }
-        if model.configuration.behavior == .always { render(); return }
-        state.toggle(model.configuration.behavior); render()
+        toggleDrawers(); render()
     }
 
     private func configurationChanged() {
         drawerAnchor = nil
-        if behavior != model.configuration.behavior {
-            behavior = model.configuration.behavior; state.configure(behavior)
+        for side in ItemSide.allCases {
+            let mode = model.configuration.behavior(for: side)
+            if columnBehaviors[side] != mode {
+                states[side]?.configure(mode); columnBehaviors[side] = mode
+            }
         }
         if style != model.configuration.style { style = model.configuration.style; hidePanels() }
         render()
     }
 
     func render() {
-        let open = state.expanded && model.trusted && !model.paused
+        let open = expanded && model.trusted && !model.paused
         model.setExpanded(open)
-        status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused, style: style)
+        let iconStyle = states[.left]?.expanded == true && !model.entries(on: .left).isEmpty ? style : .below
+        status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused, style: iconStyle)
         if !open { drawerAnchor = nil; lastContrastSample = .distantPast }
         guard open, model.visibilitySettled, !model.menuIsActive,
               let button = status.button, let window = button.window, !model.collected.isEmpty else { hidePanels(); return }
@@ -119,10 +127,13 @@ final class BarController: NSObject, NSWindowDelegate {
         if drawerAnchor == nil { drawerAnchor = currentAnchor }
         let anchor = drawerAnchor!
         let height = max(24, NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-        let leftItems = model.entries(on: .left)
-        let rightItems = model.entries(on: .right)
-        let leftPinned = model.pinned.filter { model.configuration.side(for: $0.bundle) == .left && $0.frame.maxX <= anchor.minX + 1 }
-        let rightPinned = model.pinned.filter { model.configuration.side(for: $0.bundle) == .right && $0.frame.minX >= anchor.maxX - 1 }
+        let leftItems = states[.left]?.expanded == true ? model.entries(on: .left) : []
+        let rightItems = states[.right]?.expanded == true ? model.entries(on: .right) : []
+        let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let nativeScreen = displayID.map { CGDisplayBounds($0) }
+        let nativePins = model.pinned.filter { item in nativeScreen?.contains(item.frame) == true }
+        let leftPinned = nativePins.filter { model.configuration.side(for: $0.bundle) == .left && $0.frame.maxX <= anchor.minX + 1 }
+        let rightPinned = nativePins.filter { model.configuration.side(for: $0.bundle) == .right && $0.frame.minX >= anchor.maxX - 1 }
         let leftEdge = min(anchor.minX, leftPinned.map { $0.frame.minX }.min() ?? anchor.minX)
         let rightEdge = max(anchor.maxX, rightPinned.map { $0.frame.maxX }.max() ?? anchor.maxX)
         var groups: [(frame: CGRect, items: [DrawerEntry])] = []
@@ -170,13 +181,14 @@ final class BarController: NSObject, NSWindowDelegate {
         var rightRow: [DrawerEntry] = [], rightWidth: CGFloat = 0, rightRowIndex = 0
         func appendRightRow() {
             guard !rightRow.isEmpty else { return }
-            let x = min(max(screen.frame.minX + 8, rightEdge + 2), screen.frame.maxX - rightWidth - 8)
-            let top = min(screen.frame.maxY - height, screen.visibleFrame.maxY) - 1 / screen.backingScaleFactor
-            let frame = CGRect(x: x, y: top - height * CGFloat(rightRowIndex + 1), width: rightWidth, height: height)
+            let rightAnchor = CGRect(x: rightEdge + 2, y: anchor.minY, width: anchor.width, height: anchor.height)
+            let frame = DrawerLayout.belowRow(width: rightWidth, screen: screen.frame, anchor: rightAnchor,
+                menuBarBottom: min(screen.frame.maxY - height, screen.visibleFrame.maxY), height: height,
+                row: rightRowIndex, backingScale: screen.backingScaleFactor, side: .right)
             if !groups.contains(where: { $0.frame.intersects(frame) }) { groups.append((frame, rightRow)) }
             else {
-                let bottom = groups.map { $0.frame.minY }.min() ?? top
-                groups.append((CGRect(x: x, y: bottom - height, width: rightWidth, height: height), rightRow))
+                let bottom = groups.map { $0.frame.minY }.min() ?? frame.maxY
+                groups.append((CGRect(x: frame.minX, y: bottom - height, width: rightWidth, height: height), rightRow))
             }
             rightRowIndex += 1; rightWidth = 0; rightRow = []
         }
@@ -254,7 +266,7 @@ final class BarController: NSObject, NSWindowDelegate {
         refreshContrast()
         if Date().timeIntervalSince(lastTick) >= 0.3 {
             lastTick = Date(); model.pollMenu(pointerInBar: pointerInMenuBar(point))
-            if state.expanded && style == .left { model.pollExternalMenus() }
+            if expanded && style == .left { model.pollExternalMenus() }
         }
         guard model.trusted, !model.paused else { return }
         var inside = panels.contains { $0.isVisible && $0.frame.insetBy(dx: -6, dy: -6).contains(point) }
@@ -262,12 +274,14 @@ final class BarController: NSObject, NSWindowDelegate {
             let region = window.frame.insetBy(dx: -6, dy: -6)
             inside = inside || region.contains(point)
         }
-        let previous = state.expanded
-        state.tick(now: ProcessInfo.processInfo.systemUptime, inside: inside,
-                   interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages || model.orderingItems ||
-                       (style == .left && model.externalMenuOpen) || settings?.isVisible == true,
-                   configuration: model.configuration)
-        if previous != state.expanded { render() }
+        let previous = states.mapValues(\.expanded)
+        for side in ItemSide.allCases {
+            states[side]?.tick(now: ProcessInfo.processInfo.systemUptime, inside: inside,
+                interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages || model.orderingItems ||
+                    (style == .left && model.externalMenuOpen) || settings?.isVisible == true,
+                configuration: model.configuration.expansionConfiguration(for: side))
+        }
+        if previous != states.mapValues(\.expanded) { render() }
     }
 
     func showSettings() {
@@ -291,14 +305,19 @@ final class BarController: NSObject, NSWindowDelegate {
         let menu = NSMenu()
         add("Bar 设置…", to: menu, action: #selector(settingsAction))
         menu.addItem(.separator())
-        add(state.expanded ? "收起" : "展开", to: menu, action: #selector(toggleAction))
-            .isEnabled = behavior != .always && model.trusted && !model.paused
+        add("展开 / 收起", to: menu, action: #selector(toggleAction))
+            .isEnabled = ItemSide.allCases.contains { model.configuration.behavior(for: $0) != .always } && model.trusted && !model.paused
+        for side in ItemSide.allCases {
+            let item = add((states[side]?.expanded == true ? "收起" : "展开") + side.title, to: menu, action: #selector(columnToggleAction(_:)))
+            item.representedObject = side.rawValue
+            item.isEnabled = model.configuration.behavior(for: side) != .always && model.trusted && !model.paused
+        }
         let modes = NSMenu()
         for (index, value) in ExpansionBehavior.allCases.enumerated() {
             let item = add(value.title, to: modes, action: #selector(behaviorAction(_:)))
-            item.tag = index; item.state = behavior == value ? .on : .off
+            item.tag = index; item.state = ItemSide.allCases.allSatisfy { model.configuration.behavior(for: $0) == value } ? .on : .off
         }
-        let mode = NSMenuItem(title: "显隐行为", action: nil, keyEquivalent: ""); mode.image = Brand.symbol("cursorarrow.rays"); mode.submenu = modes; menu.addItem(mode)
+        let mode = NSMenuItem(title: "两栏显隐行为", action: nil, keyEquivalent: ""); mode.image = Brand.symbol("cursorarrow.rays"); mode.submenu = modes; menu.addItem(mode)
         let styles = NSMenu()
         for (index, value) in ExpansionStyle.allCases.enumerated() {
             let item = add(value.title, to: styles, action: #selector(styleAction(_:)))
@@ -327,9 +346,22 @@ final class BarController: NSObject, NSWindowDelegate {
     }
     @objc private func aboutAction() { NSApp.orderFrontStandardAboutPanel(options: [.applicationIcon: Brand.applicationIcon]) }
     @objc private func settingsAction() { showSettings() }
-    @objc private func toggleAction() { state.toggle(behavior); render() }
+    private func toggleDrawers() {
+        let mutable = ItemSide.allCases.filter { model.configuration.behavior(for: $0) != .always }
+        let close = mutable.contains { states[$0]?.expanded == true }
+        for side in mutable {
+            let mode = model.configuration.behavior(for: side)
+            if close { states[side]?.close(mode) }
+            else if states[side]?.expanded != true { states[side]?.toggle(mode) }
+        }
+    }
+    @objc private func toggleAction() { toggleDrawers(); render() }
+    @objc private func columnToggleAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let side = ItemSide(rawValue: raw) else { return }
+        states[side]?.toggle(model.configuration.behavior(for: side)); render()
+    }
     @objc private func pauseAction() { model.setPaused(!model.paused) }
-    @objc private func behaviorAction(_ sender: NSMenuItem) { model.update { $0.behavior = ExpansionBehavior.allCases[sender.tag] } }
+    @objc private func behaviorAction(_ sender: NSMenuItem) { model.update { $0.behavior = ExpansionBehavior.allCases[sender.tag]; $0.columnBehaviors = [:] } }
     @objc private func styleAction(_ sender: NSMenuItem) { model.update { $0.style = ExpansionStyle.allCases[sender.tag] } }
     @objc private func quitAction() { NSApp.terminate(nil) }
     func shutdown() {

@@ -28,21 +28,27 @@ public struct Configuration: Codable, Equatable, Sendable {
     public var dispositions: [String: ItemDisposition] = [:]
     public var order: [String] = []
     public var sides: [String: ItemSide] = [:]
+    public var columnBehaviors: [String: ExpansionBehavior] = [:]
     public var style: ExpansionStyle = .below
     public var behavior: ExpansionBehavior = .manual
     public var hoverDelay: Double = 0.25
     public var hideDelay: Double = 1.2
     public init() {}
-    enum CodingKeys: String, CodingKey { case dispositions, order, sides, style, behavior, hoverDelay, hideDelay }
+    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, style, behavior, hoverDelay, hideDelay }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         dispositions = try values.decodeIfPresent([String: ItemDisposition].self, forKey: .dispositions) ?? [:]
         order = try values.decodeIfPresent([String].self, forKey: .order) ?? []
         sides = try values.decodeIfPresent([String: ItemSide].self, forKey: .sides) ?? [:]
+        columnBehaviors = try values.decodeIfPresent([String: ExpansionBehavior].self, forKey: .columnBehaviors) ?? [:]
         style = try values.decodeIfPresent(ExpansionStyle.self, forKey: .style) ?? .below
         behavior = try values.decodeIfPresent(ExpansionBehavior.self, forKey: .behavior) ?? .manual
         hoverDelay = try values.decodeIfPresent(Double.self, forKey: .hoverDelay) ?? 0.25
         hideDelay = try values.decodeIfPresent(Double.self, forKey: .hideDelay) ?? 1.2
+    }
+    public func behavior(for side: ItemSide) -> ExpansionBehavior { columnBehaviors[side.rawValue] ?? behavior }
+    public func expansionConfiguration(for side: ItemSide) -> Configuration {
+        var result = self; result.behavior = behavior(for: side); return result
     }
     public func side(for bundle: String) -> ItemSide { sides[bundle] ?? .left }
 

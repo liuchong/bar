@@ -71,6 +71,36 @@ struct ManagedColumnsIntegrationTests {
         #expect(restored.sorted(Array(running)).filter { restored.disposition(for: $0) == .pinned } == ["right.pin", "left.pin"])
     }
 
+    @Test func independentColumnBehaviorsPersistAndKeepSeparateExpansionStates() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(url: directory.appendingPathComponent("settings.json"))
+        var configuration = Configuration()
+        configuration.behavior = .manual
+        #expect(configuration.behavior(for: .left) == .manual)
+        #expect(configuration.behavior(for: .right) == .manual)
+        configuration.columnBehaviors = ["left": .automatic, "right": .always]
+        try store.save(configuration)
+        let restored = try store.load()
+        #expect(restored == configuration)
+        var left = ExpansionState(), right = ExpansionState()
+        left.configure(restored.behavior(for: .left)); right.configure(restored.behavior(for: .right))
+        for time in [0.0, 1.0, 3.0] {
+            left.tick(now: time, inside: true, interacting: false, configuration: restored.expansionConfiguration(for: .left))
+            right.tick(now: time, inside: true, interacting: false, configuration: restored.expansionConfiguration(for: .right))
+        }
+        #expect(left.expanded && right.expanded)
+        for time in [4.0, 8.0] {
+            left.tick(now: time, inside: false, interacting: false, configuration: restored.expansionConfiguration(for: .left))
+            right.tick(now: time, inside: false, interacting: false, configuration: restored.expansionConfiguration(for: .right))
+        }
+        #expect(!left.expanded && right.expanded)
+        right.close(restored.behavior(for: .right))
+        #expect(right.expanded)
+        let legacy = try JSONDecoder().decode(Configuration.self, from: Data(#"{"behavior":"automatic"}"#.utf8))
+        #expect(ItemSide.allCases.allSatisfy { legacy.behavior(for: $0) == .automatic })
+    }
+
     @Test func orderingIsIndependentOfApplicationLaunchOrder() {
         var configuration = Configuration()
         configuration.order = ["b", "a", "c"]

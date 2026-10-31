@@ -112,13 +112,15 @@ struct SettingsView: View {
                 })) {
                     ForEach(ExpansionStyle.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                Picker("显隐方式", selection: Binding(get: { model.configuration.behavior }, set: { value in
-                    model.update { $0.behavior = value }
-                })) {
-                    ForEach(ExpansionBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(ItemSide.allCases, id: \.self) { side in
+                    Picker(side.title + "显隐方式", selection: Binding(get: { model.configuration.behavior(for: side) }, set: { value in
+                        model.update { $0.columnBehaviors[side.rawValue] = value }
+                    })) {
+                        ForEach(ExpansionBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
                 }
                 Text(behaviorDescription).font(.callout).foregroundStyle(.secondary)
-                if model.configuration.behavior == .automatic {
+                if ItemSide.allCases.contains(where: { model.configuration.behavior(for: $0) == .automatic }) {
                     delaySlider("靠近后展开", value: model.configuration.hoverDelay, range: 0.1...2) { value in
                         model.update { $0.hoverDelay = value }
                     }
@@ -201,7 +203,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.listStyle(.inset)
-            Text("不管理的项目保留系统原生位置，不参与 Bar 排序。左右分区独立排序；“始终显示”仍由 Bar 管理原生位置。“按需收纳”遵循通用页显隐方式，右栏在下方展开以避开右侧原生图标。退出后保留分区、显示规则和顺序。")
+            Text("不管理的项目保留系统原生位置，不参与 Bar 排序。左右分区独立排序；“始终显示”仍由 Bar 管理原生位置。“按需收纳”遵循对应栏显隐方式，右栏在下方展开以避开右侧原生图标。退出后保留分区、显示规则和顺序。")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
     }
@@ -242,7 +244,10 @@ struct SettingsView: View {
         }.padding(.vertical, 6)
     }
     private var behaviorDescription: String {
-        switch model.configuration.behavior {
+        if model.configuration.behavior(for: .left) != model.configuration.behavior(for: .right) {
+            return "两栏分别显隐。点击 Bar 切换可收起的栏目，右键也可以单独展开或收起某一栏；一直展开的栏目保持可见。"
+        }
+        return switch model.configuration.behavior(for: .left) {
         case .manual: "点击菜单栏的 Bar 图标展开，再点一次收起。"
         case .automatic: "鼠标靠近后展开，离开后延时收起。操作菜单时保持展开，也可以点击切换。"
         case .always: "收纳的图标一直展开。切换显隐方式后可以收起。"

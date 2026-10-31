@@ -6,6 +6,38 @@ import BarCore
 
 @Suite("Drawer presentation")
 struct DrawerAppearanceIntegrationTests {
+    @Test @MainActor func menuLogoIsMonochromeAndUsesSystemTemplateTintInEveryState() throws {
+        var directionalMasks: [[UInt8]] = []
+        for (expanded, paused, style) in [(false, false, ExpansionStyle.below), (true, false, .below),
+                                         (true, false, .left), (false, true, .below)] {
+            let icon = Brand.menuIcon(expanded: expanded, paused: paused, style: style)
+            #expect(icon.isTemplate)
+            #expect(icon.size == NSSize(width: 20, height: 20))
+            let source = try #require(icon.cgImage(forProposedRect: nil, context: nil, hints: nil))
+            let width = source.width, height = source.height
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            try bytes.withUnsafeMutableBytes { pixels in
+                let context = try #require(CGContext(data: pixels.baseAddress, width: width, height: height,
+                    bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+                context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+                var visible = 0
+                for index in stride(from: 0, to: pixels.count, by: 4) where pixels[index + 3] > 0 {
+                    visible += 1
+                    #expect(pixels[index] == pixels[index + 1] && pixels[index + 1] == pixels[index + 2])
+                }
+                if expanded && !paused { directionalMasks.append(stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] }) }
+                #expect(visible > 20)
+                #expect(pixels[3] == 0)
+                #expect(pixels[(width - 1) * 4 + 3] == 0)
+            }
+        }
+        #expect(directionalMasks.count == 2)
+        let different = zip(directionalMasks[0], directionalMasks[1]).filter { abs(Int($0) - Int($1)) > 64 }.count
+        // Main arrow silhouettes must differ substantially, rather than just a tiny corner badge.
+        #expect(different > directionalMasks[0].count / 10)
+    }
+
     @Test @MainActor func localBackdropSelectsContrastingMonochromeGlyphs() throws {
         for (gray, expectsLight) in [(CGFloat(1), false), (0.8, false), (0.1, true), (0, true)] {
             let context = try #require(CGContext(data: nil, width: 64, height: 8, bitsPerComponent: 8,
@@ -41,6 +73,26 @@ struct DrawerAppearanceIntegrationTests {
                     menuBarBottom: bar.minY, height: 38, row: 1, backingScale: scale)
                 #expect(next.maxY == row.minY)
                 #expect(!next.intersects(row))
+            }
+        }
+    }
+
+    @Test func bothColumnsShareTheSameLowerRowGeometry() {
+        for screen in [CGRect(x: 0, y: 0, width: 1440, height: 900),
+                       CGRect(x: -1920, y: -400, width: 1920, height: 1080)] {
+            let anchor = CGRect(x: screen.midX, y: screen.maxY - 28, width: 24, height: 22)
+            for scale in [CGFloat(1), CGFloat(2)] {
+                for index in 0..<3 {
+                    let left = DrawerLayout.belowRow(width: 160, screen: screen, anchor: anchor,
+                        menuBarBottom: screen.maxY - 38, height: 38, row: index, backingScale: scale)
+                    let right = DrawerLayout.belowRow(width: 160, screen: screen, anchor: anchor,
+                        menuBarBottom: screen.maxY - 38, height: 38, row: index, backingScale: scale, side: .right)
+                    #expect(left.size == right.size)
+                    #expect(left.minY == right.minY)
+                    #expect(left.maxY == screen.maxY - 38 - 1 / scale - CGFloat(index) * 38)
+                    #expect(left.maxX == anchor.maxX)
+                    #expect(right.minX == anchor.minX)
+                }
             }
         }
     }

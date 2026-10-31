@@ -73,11 +73,11 @@ final class BarController: NSObject, NSWindowDelegate {
             }
         menuObservers.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.trackingMenus += 1 }
+                Task { @MainActor in self?.trackingMenus += 1; self?.model.ownMenusTracking += 1 }
             })
         menuObservers.append(NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in if let self { self.trackingMenus = max(0, self.trackingMenus - 1) } }
+                Task { @MainActor in if let self { self.trackingMenus = max(0, self.trackingMenus - 1); self.model.ownMenusTracking = max(0, self.model.ownMenusTracking - 1) } }
             })
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -131,9 +131,12 @@ final class BarController: NSObject, NSWindowDelegate {
         let rightItems = states[.right]?.expanded == true ? model.entries(on: .right) : []
         let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
         let nativeScreen = displayID.map { CGDisplayBounds($0) }
-        let nativePins = model.pinned.filter { item in nativeScreen?.contains(item.frame) == true }
-        let leftPinned = nativePins.filter { model.configuration.side(for: $0.bundle) == .left && $0.frame.maxX <= anchor.minX + 1 }
-        let rightPinned = nativePins.filter { model.configuration.side(for: $0.bundle) == .right && $0.frame.minX >= anchor.maxX - 1 }
+        let nativePins = model.nativePreservedItems.filter { item in
+            nativeScreen?.contains(item.frame) == true && item.frame.width > 1 && item.frame.height > 1 &&
+                item.frame.minY < (nativeScreen?.minY ?? 0) + height
+        }
+        let leftPinned = nativePins.filter { $0.frame.maxX <= anchor.minX + 1 }
+        let rightPinned = nativePins.filter { $0.frame.minX >= anchor.maxX - 1 }
         let leftEdge = min(anchor.minX, leftPinned.map { $0.frame.minX }.min() ?? anchor.minX)
         let rightEdge = max(anchor.maxX, rightPinned.map { $0.frame.maxX }.max() ?? anchor.maxX)
         var groups: [(frame: CGRect, items: [DrawerEntry])] = []
@@ -277,7 +280,7 @@ final class BarController: NSObject, NSWindowDelegate {
         let previous = states.mapValues(\.expanded)
         for side in ItemSide.allCases {
             states[side]?.tick(now: ProcessInfo.processInfo.systemUptime, inside: inside,
-                interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages || model.orderingItems ||
+                interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages || model.orderingItems || model.preparingRules ||
                     (style == .left && model.externalMenuOpen) || settings?.isVisible == true,
                 configuration: model.configuration.expansionConfiguration(for: side))
         }
@@ -288,7 +291,7 @@ final class BarController: NSObject, NSWindowDelegate {
         if settings == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 670, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            window.title = "Bar 设置"; window.isReleasedWhenClosed = false
+            window.title = "Bar 设置"; window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
             window.contentView = NSHostingView(rootView: SettingsView(model: model))
             window.minSize = NSSize(width: 650, height: 550); window.center(); window.delegate = self
             settings = window

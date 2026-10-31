@@ -28,9 +28,9 @@ struct DrawerView: View {
                     .contextMenu {
                         Button("打开菜单") { model.open(item, right: true) }
                         Divider()
-                        Button("不管理") { model.setDisposition(item.bundle, .untouched) }
-                        Button("隐藏") { model.setDisposition(item.bundle, .hidden) }
-                        Button("始终显示") { model.setDisposition(item.bundle, .pinned) }
+                        Button("忽略") { model.setPlacement(item.bundle, .ignored) }
+                        Button("隐藏") { model.setItemDisplay(item.bundle, .hidden) }
+                        Button("显示") { model.setItemDisplay(item.bundle, .shown) }
                         ForEach(ItemSide.allCases, id: \.self) { side in
                             Button("移到" + side.title) { model.setSide(item.bundle, side) }
                         }
@@ -145,7 +145,7 @@ struct SettingsView: View {
                 Text("只读取菜单栏和抽屉所在的窄条图像，用于保留图标外观并自动调整黑白对比度。图像仅在内存中处理。外观随系统变化，无需选择深色或浅色。")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
-                    Button("刷新图标") { model.scan(); model.refreshImages(force: true) }
+                    Button("刷新图标") { model.refreshManagedItems() }
                         .disabled(model.capturingImages)
                     Spacer()
                     Text("Bar · macOS 27.2+").font(.caption).foregroundStyle(.secondary)
@@ -160,7 +160,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             HStack {
                 TextField("搜索应用", text: $search).textFieldStyle(.roundedBorder)
-                Button { model.scan(); model.refreshImages(force: true) } label: { Image(systemName: "arrow.clockwise") }
+                Button { model.refreshManagedItems() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.glass).buttonBorderShape(.circle)
                     .accessibilityLabel("刷新图标")
                     .help("刷新图标").disabled(model.capturingImages)
@@ -170,7 +170,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
             }
             HStack {
-                Text("常显项目保留原生图标，并按左右分区恢复顺序。").font(.caption).foregroundStyle(.secondary)
+                Text("显示：菜单栏常显；隐藏：收进对应栏；忽略：保持原样。").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("重新整理常显顺序") { model.retryPinnedOrder() }
                     .disabled(model.orderingItems || model.pinned.isEmpty)
@@ -180,37 +180,41 @@ struct SettingsView: View {
             List {
                 ForEach(ItemSide.allCases, id: \.self) { side in
                     Section(side.title) {
-                        ForEach(filteredApplications.filter { model.configuration.disposition(for: $0.id) != .untouched && model.configuration.side(for: $0.id) == side }, id: \.id) { app in
-                            applicationRow(app, managed: true)
+                        ForEach(filteredApplications.filter { !SystemItemPolicy.isSystem($0.id) && model.configuration.placement(for: $0.id) == (side == .left ? .left : .right) }, id: \.id) { app in
+                            applicationRow(app)
                         }
                     }
                 }
-                Section("不管理") {
-                    ForEach(filteredApplications.filter { model.configuration.disposition(for: $0.id) == .untouched }, id: \.id) { app in
-                        applicationRow(app, managed: false)
+                Section("忽略") {
+                    ForEach(filteredApplications.filter { !SystemItemPolicy.isSystem($0.id) && model.configuration.placement(for: $0.id) == .ignored }, id: \.id) { app in
+                        applicationRow(app)
                     }
                 }
-                Section("系统项目 · 当前保留原样") {
-                    ForEach(model.systemItems.filter { search.isEmpty || $0.label.localizedCaseInsensitiveContains(search) }, id: \.id) { item in
-                        HStack(spacing: 10) {
-                            Image(systemName: "gearshape").frame(width: 24, height: 24).foregroundStyle(.secondary)
-                            Text(item.label).lineLimit(1)
-                            Spacer()
-                            Text("由 macOS 管理").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 6)
-                    }
-                    Text("系统项目目前不参与 Bar 收纳和排序。可在系统设置的“菜单栏”中调整支持的项目；未识别的项目也不会被 Bar 隐藏。")
+                Section("系统图标") {
+                    Toggle("管理系统图标", isOn: Binding(get: { model.configuration.manageSystemIcons }, set: model.setSystemManagement))
+                    Text(model.configuration.manageSystemIcons ? "系统图标按各自规则管理。时钟、控制中心等固定入口保持原样。" : "已停用系统图标管理；下方选择、分区和顺序会保留，重新开启后恢复。")
                         .font(.caption).foregroundStyle(.secondary)
+                    ForEach(filteredApplications.filter { SystemItemPolicy.isSystem($0.id) }, id: \.id) { app in
+                        if SystemItemPolicy.isManageable(app.id) {
+                            applicationRow(app, rulesEnabled: model.configuration.manageSystemIcons)
+                        } else {
+                            HStack(spacing: 10) {
+                                Image(systemName: SystemItemPolicy.symbol(app.id)).frame(width: 24, height: 24)
+                                Text(app.name); Spacer()
+                                Text("系统固定入口").font(.caption).foregroundStyle(.secondary)
+                            }.padding(.vertical, 6)
+                        }
+                    }
                 }
             }.listStyle(.inset)
-            Text("不管理的项目保留系统原生位置，不参与 Bar 排序。左右分区独立排序；“始终显示”仍由 Bar 管理原生位置。“按需收纳”遵循对应栏显隐方式，右栏在下方展开以避开右侧原生图标。退出后保留分区、显示规则和顺序。")
+            Text("左右栏独立排序。隐藏项目随对应栏展开，右栏在下方展开以避开原生图标。忽略项目保持系统原状；所有选择都会保存。")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
     }
     private var filteredApplications: [(id: String, name: String, icon: NSImage?, count: Int)] {
         model.applications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }
     }
-    private func applicationRow(_ app: (id: String, name: String, icon: NSImage?, count: Int), managed: Bool) -> some View {
+    private func applicationRow(_ app: (id: String, name: String, icon: NSImage?, count: Int), rulesEnabled: Bool = true) -> some View {
         HStack(spacing: 10) {
             Image(nsImage: app.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
                 .resizable().scaledToFit().frame(width: 24, height: 24)
@@ -219,28 +223,27 @@ struct SettingsView: View {
                 Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if managed {
-                Picker("\(app.name) 所在分区", selection: Binding(get: { model.configuration.side(for: app.id) }, set: {
-                    model.setSide(app.id, $0)
+            VStack(alignment: .trailing, spacing: 5) {
+                Picker("\(app.name) 分区", selection: Binding(get: { model.configuration.placement(for: app.id) }, set: {
+                    model.setPlacement(app.id, $0)
                 })) {
-                    ForEach(ItemSide.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().frame(width: 70)
-            }
-            Picker(app.name, selection: Binding(get: { model.configuration.disposition(for: app.id) }, set: {
-                model.setDisposition(app.id, $0)
-            })) {
-                ForEach(ItemDisposition.allCases, id: \.self) { Text($0.title).tag($0) }
-            }.labelsHidden().frame(width: 90)
-            if managed {
-                HStack(spacing: 8) {
-                    Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
-                        .help("向前移动").accessibilityLabel("\(app.name) 向前移动")
-                        .disabled(!model.canMove(app.id, direction: -1))
-                    Button { model.move(app.id, direction: 1) } label: { Image(systemName: "chevron.down") }
-                        .help("向后移动").accessibilityLabel("\(app.name) 向后移动")
-                        .disabled(!model.canMove(app.id, direction: 1))
-                }.buttonStyle(.borderless)
-            }
+                    ForEach(ItemPlacement.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 185)
+                Picker("\(app.name) 显示状态", selection: Binding(get: { model.configuration.display(for: app.id) }, set: {
+                    model.setItemDisplay(app.id, $0)
+                })) {
+                    ForEach(ItemDisplay.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 130)
+                    .disabled(model.configuration.placement(for: app.id) == .ignored)
+            }.disabled(!rulesEnabled)
+            VStack(spacing: 8) {
+                Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
+                    .help("向前移动").accessibilityLabel("\(app.name) 向前移动")
+                    .disabled(!rulesEnabled || !model.canMove(app.id, direction: -1))
+                Button { model.move(app.id, direction: 1) } label: { Image(systemName: "chevron.down") }
+                    .help("向后移动").accessibilityLabel("\(app.name) 向后移动")
+                    .disabled(!rulesEnabled || !model.canMove(app.id, direction: 1))
+            }.buttonStyle(.borderless)
         }.padding(.vertical, 6)
     }
     private var behaviorDescription: String {

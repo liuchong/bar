@@ -35,6 +35,7 @@
 }
 
 + (void)activateWithBundles:(NSArray<NSString *> *)bundles
+               systemItems:(NSArray<NSNumber *> *)systemItems
                 completion:(void (^)(BARVisibilityLease *, NSError *))completion {
     if (![self isAvailable]) {
         completion(nil, [NSError errorWithDomain:@"Bar.Visibility" code:1
@@ -42,8 +43,6 @@
         return;
     }
     @try {
-        NSMutableArray *systemItems = [NSMutableArray arrayWithCapacity:64];
-        for (NSInteger index = 0; index < 64; index++) [systemItems addObject:@(index)];
         Class configType = NSClassFromString(@"MBAssessmentModeConfiguration");
         id configuration = [(id<BARConfigurationAPI>)[configType alloc]
                             initWithAllowedSystemItems:systemItems allowedBundleIdentifiers:bundles];

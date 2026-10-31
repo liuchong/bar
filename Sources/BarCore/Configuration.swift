@@ -3,13 +3,23 @@ import Foundation
 public enum ItemDisposition: String, Codable, CaseIterable, Sendable {
     case untouched, collected, pinned, hidden
     public var title: String {
-        switch self { case .untouched: "不管理"; case .collected: "按需收纳"; case .pinned: "始终显示"; case .hidden: "隐藏" }
+        switch self { case .untouched: "忽略"; case .collected: "隐藏"; case .pinned: "显示"; case .hidden: "隐藏" }
     }
 }
 
 public enum ItemSide: String, Codable, CaseIterable, Sendable {
     case left, right
     public var title: String { self == .left ? "左栏" : "右栏" }
+}
+
+public enum ItemPlacement: String, Codable, CaseIterable, Sendable {
+    case left, right, ignored
+    public var title: String { switch self { case .left: "左栏"; case .right: "右栏"; case .ignored: "忽略" } }
+}
+
+public enum ItemDisplay: String, CaseIterable, Sendable {
+    case shown, hidden
+    public var title: String { self == .shown ? "显示" : "隐藏" }
 }
 
 public enum ExpansionStyle: String, Codable, CaseIterable, Sendable {
@@ -28,19 +38,23 @@ public struct Configuration: Codable, Equatable, Sendable {
     public var dispositions: [String: ItemDisposition] = [:]
     public var order: [String] = []
     public var sides: [String: ItemSide] = [:]
+    public var manageSystemIcons = false
+    public var ignored: [String: Bool] = [:]
     public var columnBehaviors: [String: ExpansionBehavior] = [:]
     public var style: ExpansionStyle = .below
     public var behavior: ExpansionBehavior = .manual
     public var hoverDelay: Double = 0.25
     public var hideDelay: Double = 1.2
     public init() {}
-    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, style, behavior, hoverDelay, hideDelay }
+    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, manageSystemIcons, ignored, style, behavior, hoverDelay, hideDelay }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         dispositions = try values.decodeIfPresent([String: ItemDisposition].self, forKey: .dispositions) ?? [:]
         order = try values.decodeIfPresent([String].self, forKey: .order) ?? []
         sides = try values.decodeIfPresent([String: ItemSide].self, forKey: .sides) ?? [:]
         columnBehaviors = try values.decodeIfPresent([String: ExpansionBehavior].self, forKey: .columnBehaviors) ?? [:]
+        manageSystemIcons = try values.decodeIfPresent(Bool.self, forKey: .manageSystemIcons) ?? false
+        ignored = try values.decodeIfPresent([String: Bool].self, forKey: .ignored) ?? [:]
         style = try values.decodeIfPresent(ExpansionStyle.self, forKey: .style) ?? .below
         behavior = try values.decodeIfPresent(ExpansionBehavior.self, forKey: .behavior) ?? .manual
         hoverDelay = try values.decodeIfPresent(Double.self, forKey: .hoverDelay) ?? 0.25
@@ -52,7 +66,29 @@ public struct Configuration: Codable, Equatable, Sendable {
     }
     public func side(for bundle: String) -> ItemSide { sides[bundle] ?? .left }
 
-    public func disposition(for bundle: String) -> ItemDisposition { dispositions[bundle] ?? .untouched }
+    public func storedDisposition(for id: String) -> ItemDisposition {
+        let value = dispositions[id] ?? .collected
+        return value == .untouched ? .collected : value
+    }
+    public func placement(for id: String) -> ItemPlacement {
+        if ignored[id] ?? (dispositions[id] == nil || dispositions[id] == .untouched) { return .ignored }
+        return side(for: id) == .left ? .left : .right
+    }
+    public func display(for id: String) -> ItemDisplay { storedDisposition(for: id) == .pinned ? .shown : .hidden }
+    public mutating func setPlacement(_ placement: ItemPlacement, for id: String) {
+        ignored[id] = placement == .ignored
+        if placement != .ignored {
+            sides[id] = placement == .left ? .left : .right
+            if dispositions[id] == nil || dispositions[id] == .untouched { dispositions[id] = .collected }
+        }
+    }
+    public mutating func setDisplay(_ display: ItemDisplay, for id: String) {
+        dispositions[id] = display == .shown ? .pinned : .collected
+    }
+    public func disposition(for id: String) -> ItemDisposition {
+        if SystemItemPolicy.isSystem(id) && (!manageSystemIcons || !SystemItemPolicy.isManageable(id)) { return .untouched }
+        return placement(for: id) == .ignored ? .untouched : storedDisposition(for: id)
+    }
 
     public func sorted(_ identifiers: [String]) -> [String] {
         let ranks = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
@@ -81,10 +117,11 @@ public struct Configuration: Codable, Equatable, Sendable {
 public enum VisibilityPolicy {
     /// Restrictions operate on application identities; system controls and the host always survive.
     public static func allowed(running: Set<String>, configuration: Configuration,
-                               temporary: String?, host: String) -> Set<String>? {
-        let denied = Set(configuration.dispositions.compactMap { bundle, mode -> String? in
+                               temporary: String?, host: String, preparing: Set<String> = []) -> Set<String>? {
+        let denied = Set(configuration.dispositions.keys.compactMap { bundle -> String? in
             guard running.contains(bundle), bundle != host, !bundle.hasPrefix("com.apple.") else { return nil }
-            return mode == .hidden || (mode == .collected && bundle != temporary) ? bundle : nil
+            let mode = configuration.disposition(for: bundle)
+            return mode == .hidden || (mode == .collected && bundle != temporary && !preparing.contains(bundle)) ? bundle : nil
         })
         guard !denied.isEmpty else { return nil }
         return running.subtracting(denied).union([host, "com.apple.MenuBarAgent",

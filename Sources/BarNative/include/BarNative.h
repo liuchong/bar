@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface BARVisibilityLease : NSObject
 + (BOOL)isAvailable;
 + (void)activateWithBundles:(NSArray<NSString *> *)bundles
+               systemItems:(NSArray<NSNumber *> *)systemItems
                 completion:(void (^)(BARVisibilityLease * _Nullable, NSError * _Nullable))completion;
 - (void)invalidate;
 @end

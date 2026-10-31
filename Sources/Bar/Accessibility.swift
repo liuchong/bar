@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import BarCore
 
 struct MenuItem: Identifiable {
     let id: String
@@ -10,11 +11,6 @@ struct MenuItem: Identifiable {
     let element: AXUIElement
     let frame: CGRect
     let pid: pid_t
-}
-
-struct SystemMenuItem: Identifiable, Sendable {
-    let id: String
-    let label: String
 }
 
 enum MenuAccessibility {
@@ -37,6 +33,9 @@ enum MenuAccessibility {
         if let raw = value(element, kAXSizeAttribute), CFGetTypeID(raw) == AXValueGetTypeID() {
             AXValueGetValue(raw as! AXValue, .cgSize, &size)
         }
+        guard [point.x, point.y, size.width, size.height].allSatisfy(\.isFinite),
+              abs(point.x) < 1_000_000_000, abs(point.y) < 1_000_000_000,
+              size.width >= 0, size.height >= 0, size.width < 1_000_000, size.height < 1_000_000 else { return .zero }
         return CGRect(origin: point, size: size)
     }
     static func actions(_ element: AXUIElement) -> [String] {
@@ -68,12 +67,12 @@ enum MenuAccessibility {
         }
         return items
     }
-    /// System controls use a separate accessibility tree and are informational only.
-    static func systemItems(_ apps: [NSRunningApplication]) -> [SystemMenuItem] {
+    /// System controls have individual identities even though they share one owning process.
+    static func systemItems(_ apps: [NSRunningApplication]) -> [MenuItem] {
         guard let agent = apps.first(where: { $0.bundleIdentifier == "com.apple.MenuBarAgent" }) else { return [] }
         let root = AXUIElementCreateApplication(agent.processIdentifier)
         AXUIElementSetMessagingTimeout(root, 0.08)
-        var pending = [root], visited: [AXUIElement] = [], result: [String: String] = [:]
+        var pending = [root], visited: [AXUIElement] = [], result: [String: MenuItem] = [:]
         for _ in 0..<4 {
             var next: [AXUIElement] = []
             for element in pending.prefix(128) where visited.count < 128 {
@@ -83,7 +82,12 @@ enum MenuAccessibility {
                 let id = text(element, kAXIdentifierAttribute)
                 if id.hasPrefix("com.apple.menuextra.") {
                     let label = text(element, kAXDescriptionAttribute).components(separatedBy: .newlines).first ?? ""
-                    result[id] = label.isEmpty ? id : label
+                    let key = SystemItemPolicy.canonical(id)
+                    let knownTitle = SystemItemPolicy.title(key)
+                    let title = knownTitle == key && !label.isEmpty ? label : knownTitle
+                    result[key] = MenuItem(id: key, bundle: key, appName: title, label: label.isEmpty ? title : label,
+                        icon: NSImage(systemSymbolName: SystemItemPolicy.symbol(key), accessibilityDescription: title) ?? NSImage(),
+                        element: element, frame: frame(element), pid: agent.processIdentifier)
                 } else {
                     next += children(element)
                     next += value(element, kAXWindowsAttribute) as? [AXUIElement] ?? []
@@ -92,8 +96,7 @@ enum MenuAccessibility {
             pending = next
             if pending.isEmpty || visited.count >= 128 { break }
         }
-        return result.map { SystemMenuItem(id: $0.key, label: $0.value) }
-            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        return result.values.sorted { $0.appName.localizedStandardCompare($1.appName) == .orderedAscending }
     }
     static func press(_ item: MenuItem, right: Bool) -> AXError {
         AXUIElementSetMessagingTimeout(item.element, 0.15)

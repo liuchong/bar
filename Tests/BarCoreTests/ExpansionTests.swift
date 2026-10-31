@@ -64,4 +64,23 @@ struct ExpansionTests {
         config.normalize()
         #expect(config.hoverDelay == 0.1 && config.hideDelay == 10)
     }
+
+    @Test func ignoringACollectedItemReleasesItsNativeIconButRetainsTheRule() {
+        var config = Configuration()
+        config.setPlacement(.right, for: "app.one")
+        config.setDisplay(.hidden, for: "app.one")
+        config.setPlacement(.ignored, for: "app.one")
+        let running: Set<String> = ["app.one", "app.other"]
+        #expect(VisibilityPolicy.allowed(running: running, configuration: config,
+            temporary: nil, host: "bar.host") == nil)
+        config.dispositions["app.other"] = .collected
+        let allowed = VisibilityPolicy.allowed(running: running, configuration: config,
+            temporary: nil, host: "bar.host")
+        #expect(allowed?.contains("app.one") == true)
+        #expect(allowed?.contains("app.other") == false)
+        #expect(config.side(for: "app.one") == .right && config.display(for: "app.one") == .hidden)
+        config.setPlacement(.right, for: "app.one")
+        #expect(VisibilityPolicy.allowed(running: running, configuration: config,
+            temporary: nil, host: "bar.host")?.contains("app.one") == false)
+    }
 }

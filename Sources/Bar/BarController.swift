@@ -20,6 +20,9 @@ final class BarController: NSObject, NSWindowDelegate {
     private var menuObservers: [NSObjectProtocol] = []
     private var trackingMenus = 0
     private var drawerAnchor: CGRect?
+    private var contrastTask: Task<Void, Never>?
+    private var lastContrastSample = Date.distantPast
+    private var lowerContrast: [Int: Bool] = [:]
 
     init(model: AppModel) {
         self.model = model
@@ -107,7 +110,7 @@ final class BarController: NSObject, NSWindowDelegate {
         let open = state.expanded && model.trusted && !model.paused
         model.setExpanded(open)
         status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused, style: style)
-        if !open { drawerAnchor = nil }
+        if !open { drawerAnchor = nil; lastContrastSample = .distantPast }
         guard open, model.visibilitySettled, !model.menuIsActive,
               let button = status.button, let window = button.window, !model.collected.isEmpty else { hidePanels(); return }
         let screen = window.screen ?? NSScreen.main!
@@ -162,7 +165,8 @@ final class BarController: NSObject, NSWindowDelegate {
             background.configure(style: style)
             panel.hasShadow = false
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-            let dark = displayID.flatMap { MenuBarImages.backgroundDark[$0] }
+            let dark = (style == .below ? lowerContrast[index] : nil)
+                ?? displayID.flatMap { MenuBarImages.backgroundDark[$0] }
             panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! } ?? button.effectiveAppearance
             panel.setFrame(group.frame, display: true)
             let root = DrawerView(model: model, items: group.items, height: height)
@@ -174,6 +178,26 @@ final class BarController: NSObject, NSWindowDelegate {
                 background.hosting = hosting; background.addSubview(hosting)
             }
             panel.orderFrontRegardless()
+        }
+        refreshContrast()
+    }
+
+    private func refreshContrast() {
+        guard style == .below, contrastTask == nil, !model.capturingImages, MenuBarImages.authorized,
+              Date().timeIntervalSince(lastContrastSample) >= 0.8 else { return }
+        let frames = panels.filter(\.isVisible).map(\.frame)
+        guard !frames.isEmpty else { return }
+        lastContrastSample = Date()
+        contrastTask = Task { [weak self] in
+            defer { self?.contrastTask = nil }
+            guard let samples = try? await DrawerContrast.sample(frames), !Task.isCancelled,
+                  let self, self.style == .below,
+                  self.panels.filter(\.isVisible).map(\.frame) == frames else { return }
+            for (index, value) in samples.enumerated() {
+                guard let value else { continue }
+                self.lowerContrast[index] = DrawerContrast.prefersLight(luminance: value, previous: self.lowerContrast[index])
+            }
+            self.render()
         }
     }
 
@@ -198,6 +222,7 @@ final class BarController: NSObject, NSWindowDelegate {
 
     private func tick() {
         let point = NSEvent.mouseLocation
+        refreshContrast()
         if Date().timeIntervalSince(lastTick) >= 0.3 {
             lastTick = Date(); model.pollMenu(pointerInBar: pointerInMenuBar(point))
             if state.expanded && style == .left { model.pollExternalMenus() }
@@ -279,7 +304,7 @@ final class BarController: NSObject, NSWindowDelegate {
     @objc private func styleAction(_ sender: NSMenuItem) { model.update { $0.style = ExpansionStyle.allCases[sender.tag] } }
     @objc private func quitAction() { NSApp.terminate(nil) }
     func shutdown() {
-        timer?.invalidate(); hidePanels()
+        timer?.invalidate(); contrastTask?.cancel(); hidePanels()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
         model.shutdown()

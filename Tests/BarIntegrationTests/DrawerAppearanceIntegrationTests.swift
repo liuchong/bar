@@ -6,6 +6,26 @@ import BarCore
 
 @Suite("Drawer presentation")
 struct DrawerAppearanceIntegrationTests {
+    @Test @MainActor func localBackdropSelectsContrastingMonochromeGlyphs() throws {
+        for (gray, expectsLight) in [(CGFloat(1), false), (0.8, false), (0.1, true), (0, true)] {
+            let context = try #require(CGContext(data: nil, width: 64, height: 8, bitsPerComponent: 8,
+                bytesPerRow: 64 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+            context.setFillColor(CGColor(gray: gray, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 8))
+            let image = try #require(context.makeImage())
+            let luminance = try #require(DrawerContrast.luminance(of: image))
+            #expect(DrawerContrast.prefersLight(luminance: luminance, previous: nil) == expectsLight)
+        }
+    }
+
+    @Test @MainActor func middleGrayChangesDoNotFlickerBetweenBlackAndWhite() {
+        #expect(DrawerContrast.prefersLight(luminance: 0.18, previous: true))
+        #expect(!DrawerContrast.prefersLight(luminance: 0.18, previous: false))
+        #expect(!DrawerContrast.prefersLight(luminance: 0.25, previous: true))
+        #expect(DrawerContrast.prefersLight(luminance: 0.10, previous: false))
+    }
+
     @Test func lowerStripClearsFullMenuBarEvenWhenItsButtonIsShorter() {
         for screen in [CGRect(x: 0, y: 0, width: 1440, height: 900),
                        CGRect(x: -1920, y: -400, width: 1920, height: 1080)] {

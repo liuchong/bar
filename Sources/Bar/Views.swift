@@ -136,7 +136,7 @@ struct SettingsView: View {
                     if model.imageAccess { Text(model.capturingImages ? "正在更新…" : "已允许").foregroundStyle(.secondary) }
                     else { Button("允许屏幕录制…", action: model.requestImageAccess) }
                 }
-                Text("只读取菜单栏顶部的图像，用于保留图标的原本外观。图像仅在内存中处理。外观随系统变化，无需选择深色或浅色。")
+                Text("只读取菜单栏和抽屉所在的窄条图像，用于保留图标外观并自动调整黑白对比度。图像仅在内存中处理。外观随系统变化，无需选择深色或浅色。")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Button("刷新图标") { model.scan(); model.refreshImages(force: true) }

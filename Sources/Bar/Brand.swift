@@ -29,13 +29,18 @@ enum Brand {
                 }
                 arrow.stroke()
             } else {
+                box.lineWidth = 1.9
                 box.appendRoundedRect(NSRect(x: 2, y: 3, width: 16, height: 14), xRadius: 1, yRadius: 1)
-                box.move(to: NSPoint(x: 2, y: 12)); box.line(to: NSPoint(x: 18, y: 12))
+                box.move(to: NSPoint(x: 2, y: 13)); box.line(to: NSPoint(x: 8, y: 13))
+                box.move(to: NSPoint(x: 12, y: 13)); box.line(to: NSPoint(x: 18, y: 13))
                 if paused {
                     box.move(to: NSPoint(x: 7, y: 6)); box.line(to: NSPoint(x: 7, y: 9))
                     box.move(to: NSPoint(x: 13, y: 6)); box.line(to: NSPoint(x: 13, y: 9))
                 } else {
-                    box.move(to: NSPoint(x: 10, y: 17)); box.line(to: NSPoint(x: 10, y: 8))
+                    box.move(to: NSPoint(x: 8, y: 17)); box.line(to: NSPoint(x: 8, y: 10))
+                    box.line(to: NSPoint(x: 10, y: 11)); box.line(to: NSPoint(x: 12, y: 10))
+                    box.line(to: NSPoint(x: 12, y: 17))
+                    box.move(to: NSPoint(x: 13, y: 6)); box.line(to: NSPoint(x: 16, y: 6))
                 }
             }
             box.stroke()

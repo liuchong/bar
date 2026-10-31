@@ -5,7 +5,6 @@ enum MakeIcon {
     static func main() throws {
         let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let artwork = DrawerArtwork.applicationIcon()
         for points in [16, 32, 128, 256, 512] {
             for scale in [1, 2] {
                 let pixels = points * scale
@@ -16,7 +15,7 @@ enum MakeIcon {
                 NSGraphicsContext.saveGraphicsState()
                 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
                 NSGraphicsContext.current?.imageInterpolation = .high
-                artwork.draw(in: NSRect(x: 0, y: 0, width: pixels, height: pixels))
+                DrawerArtwork.drawApplicationIcon(in: NSRect(x: 0, y: 0, width: pixels, height: pixels))
                 NSGraphicsContext.restoreGraphicsState()
                 let suffix = scale == 2 ? "@2x" : ""
                 let file = output.appendingPathComponent("icon_\(points)x\(points)\(suffix).png")

@@ -1,10 +1,13 @@
 import AppKit
 import BarNative
+import OSLog
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: BarController?
+    private let lifecycleLog = Logger(subsystem: "com.liuchong.bar", category: "Lifecycle")
     func applicationDidFinishLaunching(_ notification: Notification) {
+        lifecycleLog.notice("Bar started")
         guard ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 0)) else {
             let alert = NSAlert(); alert.messageText = "Bar 需要 macOS 27.2 或以上版本。"
             alert.runModal(); NSApp.terminate(nil); return
@@ -29,11 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         if !model.trusted || !model.imageAccess || CommandLine.arguments.contains("--settings") { controller?.showSettings() }
     }
-    func applicationWillTerminate(_ notification: Notification) { controller?.shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        lifecycleLog.notice("Bar terminating")
+        controller?.shutdown()
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let controller, !flag && !controller.model.expanded && !controller.model.menuIsActive {
-            controller.showSettings()
-        }
+        controller?.showSettings()
         return true
     }
 }

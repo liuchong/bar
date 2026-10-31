@@ -68,7 +68,7 @@ struct DrawerAppearanceIntegrationTests {
                     menuBarBottom: bar.minY, height: 38, row: 0, backingScale: scale)
                 #expect(row.maxY == bar.minY - 1 / scale)
                 #expect(!row.intersects(bar))
-                #expect(row.maxX == button.maxX)
+                #expect(row.maxX == button.midX)
                 let next = DrawerLayout.belowRow(width: 160, screen: screen, anchor: button,
                     menuBarBottom: bar.minY, height: 38, row: 1, backingScale: scale)
                 #expect(next.maxY == row.minY)
@@ -90,8 +90,10 @@ struct DrawerAppearanceIntegrationTests {
                     #expect(left.size == right.size)
                     #expect(left.minY == right.minY)
                     #expect(left.maxY == screen.maxY - 38 - 1 / scale - CGFloat(index) * 38)
-                    #expect(left.maxX == anchor.maxX)
-                    #expect(right.minX == anchor.minX)
+                    #expect(left.maxX == anchor.midX)
+                    #expect(right.minX == anchor.midX)
+                    #expect(left.maxX == right.minX)
+                    #expect(!left.intersects(right))
                 }
             }
         }

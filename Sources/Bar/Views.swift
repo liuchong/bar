@@ -28,15 +28,15 @@ struct DrawerView: View {
                     .contextMenu {
                         Button("打开菜单") { model.open(item, right: true) }
                         Divider()
-                        Button("忽略") { model.setPlacement(item.bundle, .ignored) }
-                        Button("隐藏") { model.setItemDisplay(item.bundle, .hidden) }
-                        Button("显示") { model.setItemDisplay(item.bundle, .shown) }
+                        Button("忽略") { MenuSelection.commit { model.setPlacement(item.bundle, .ignored) } }
+                        Button("隐藏") { MenuSelection.commit { model.setItemDisplay(item.bundle, .hidden) } }
+                        Button("显示") { MenuSelection.commit { model.setItemDisplay(item.bundle, .shown) } }
                         ForEach(ItemSide.allCases, id: \.self) { side in
-                            Button("移到" + side.title) { model.setSide(item.bundle, side) }
+                            Button("移到" + side.title) { MenuSelection.commit { model.setSide(item.bundle, side) } }
                         }
                         Divider()
-                        Button("向前移动") { model.move(item.bundle, direction: -1) }
-                        Button("向后移动") { model.move(item.bundle, direction: 1) }
+                        Button("向前移动") { MenuSelection.commit { model.move(item.bundle, direction: -1) } }
+                        Button("向后移动") { MenuSelection.commit { model.move(item.bundle, direction: 1) } }
                     }
                     .onDrag { dragging = item.bundle; return NSItemProvider(object: item.bundle as NSString) }
                     .onDrop(of: [.text], delegate: DrawerDrop(model: model, target: item.bundle, dragging: $dragging))
@@ -216,24 +216,21 @@ struct SettingsView: View {
     }
     private func applicationRow(_ app: (id: String, name: String, icon: NSImage?, count: Int), rulesEnabled: Bool = true) -> some View {
         HStack(spacing: 10) {
-            Image(nsImage: app.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
+            Image(nsImage: app.icon ?? NSWorkspace.shared.icon(for: .application))
                 .resizable().scaledToFit().frame(width: 24, height: 24)
+                .help(app.icon == nil ? "未找到已安装的应用，管理规则仍保留。" : app.name)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).lineLimit(1)
                 Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
-                Picker("\(app.name) 分区", selection: Binding(get: { model.configuration.placement(for: app.id) }, set: {
-                    model.setPlacement(app.id, $0)
-                })) {
-                    ForEach(ItemPlacement.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().pickerStyle(.menu).frame(width: 90)
-                Picker("\(app.name) 显示状态", selection: Binding(get: { model.configuration.display(for: app.id) }, set: {
-                    model.setItemDisplay(app.id, $0)
-                })) {
-                    ForEach(ItemDisplay.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().pickerStyle(.menu).frame(width: 75)
+                SettingsMenuPicker(title: "\(app.name) 分区", choices: ItemPlacement.allCases.map { ($0, $0.title) },
+                    selection: model.configuration.placement(for: app.id), onChange: { model.setPlacement(app.id, $0) })
+                    .frame(width: 90)
+                SettingsMenuPicker(title: "\(app.name) 显示状态", choices: ItemDisplay.allCases.map { ($0, $0.title) },
+                    selection: model.configuration.display(for: app.id), onChange: { model.setItemDisplay(app.id, $0) })
+                    .frame(width: 75)
                     .disabled(model.configuration.placement(for: app.id) == .ignored)
             }.disabled(!rulesEnabled)
             HStack(spacing: 8) {
@@ -244,7 +241,7 @@ struct SettingsView: View {
                     .help("向后移动").accessibilityLabel("\(app.name) 向后移动")
                     .disabled(!rulesEnabled || !model.canMove(app.id, direction: 1))
             }.buttonStyle(.borderless)
-        }.padding(.vertical, 6)
+        }.padding(.vertical, 6).accessibilityElement(children: .contain)
     }
     private var behaviorDescription: String {
         if model.configuration.behavior(for: .left) != model.configuration.behavior(for: .right) {

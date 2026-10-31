@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Combine
 import BarCore
+import OSLog
 
 @MainActor
 final class BarController: NSObject, NSWindowDelegate {
@@ -24,6 +25,7 @@ final class BarController: NSObject, NSWindowDelegate {
     private var contrastTask: Task<Void, Never>?
     private var lastContrastSample = Date.distantPast
     private var lowerContrast: [Int: Bool] = [:]
+    private let lifecycleLog = Logger(subsystem: "com.liuchong.bar", category: "Lifecycle")
 
     init(model: AppModel) {
         self.model = model
@@ -136,9 +138,7 @@ final class BarController: NSObject, NSWindowDelegate {
                 item.frame.minY < (nativeScreen?.minY ?? 0) + height
         }
         let leftPinned = nativePins.filter { $0.frame.maxX <= anchor.minX + 1 }
-        let rightPinned = nativePins.filter { $0.frame.minX >= anchor.maxX - 1 }
         let leftEdge = min(anchor.minX, leftPinned.map { $0.frame.minX }.min() ?? anchor.minX)
-        let rightEdge = max(anchor.maxX, rightPinned.map { $0.frame.maxX }.max() ?? anchor.maxX)
         var groups: [(frame: CGRect, items: [DrawerEntry])] = []
         if style == .left {
             let ordered = Array(leftItems.reversed())
@@ -162,11 +162,10 @@ final class BarController: NSObject, NSWindowDelegate {
             // Start below the full menu-bar region, rather than below the button's inset bounds.
             let menuBarBottom = min(screen.frame.maxY - height, screen.visibleFrame.maxY)
             var row: [DrawerEntry] = [], width: CGFloat = 0
-            let maximum = max(116, leftEdge - screen.frame.minX - 8)
+            let maximum = max(116, anchor.midX - screen.frame.minX - 8)
             func appendRow() {
                 guard !row.isEmpty else { return }
-                let leftAnchor = CGRect(x: leftEdge - anchor.width, y: anchor.minY, width: anchor.width, height: anchor.height)
-                let frame = DrawerLayout.belowRow(width: width, screen: screen.frame, anchor: leftAnchor,
+                let frame = DrawerLayout.belowRow(width: width, screen: screen.frame, anchor: anchor,
                     menuBarBottom: menuBarBottom, height: height, row: groups.count,
                     backingScale: screen.backingScaleFactor)
                 groups.append((frame, row))
@@ -179,13 +178,12 @@ final class BarController: NSObject, NSWindowDelegate {
             }
             appendRow()
         }
-        // Right-side collection uses the row below, preserving the occupied native right band.
-        let rightMaximum = max(116, screen.frame.maxX - rightEdge - 10)
+        // Lower rows share Bar's center. Native icons above them do not reserve horizontal space below.
+        let rightMaximum = max(116, screen.frame.maxX - anchor.midX - 8)
         var rightRow: [DrawerEntry] = [], rightWidth: CGFloat = 0, rightRowIndex = 0
         func appendRightRow() {
             guard !rightRow.isEmpty else { return }
-            let rightAnchor = CGRect(x: rightEdge + 2, y: anchor.minY, width: anchor.width, height: anchor.height)
-            let frame = DrawerLayout.belowRow(width: rightWidth, screen: screen.frame, anchor: rightAnchor,
+            let frame = DrawerLayout.belowRow(width: rightWidth, screen: screen.frame, anchor: anchor,
                 menuBarBottom: min(screen.frame.maxY - height, screen.visibleFrame.maxY), height: height,
                 row: rightRowIndex, backingScale: screen.backingScaleFactor, side: .right)
             if !groups.contains(where: { $0.frame.intersects(frame) }) { groups.append((frame, rightRow)) }
@@ -292,17 +290,31 @@ final class BarController: NSObject, NSWindowDelegate {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 670, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "Bar 设置"; window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
+            window.identifier = NSUserInterfaceItemIdentifier("Bar.Settings")
             window.contentView = NSHostingView(rootView: SettingsView(model: model))
             window.minSize = NSSize(width: 650, height: 550); window.center(); window.delegate = self
             settings = window
         }
+        NSApp.setActivationPolicy(.regular)
+        if settings?.isMiniaturized == true { settings?.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         settings?.makeKeyAndOrderFront(nil)
+        lifecycleLog.notice("Settings opened with Dock presence")
         render()
         model.scan()
     }
     func windowWillClose(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in self?.render() }
+        guard notification.object as? NSWindow === settings else { return }
+        lifecycleLog.notice("Settings closed; menu-bar app remains running")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.settings?.isVisible != true { NSApp.setActivationPolicy(.accessory) }
+            self.render()
+        }
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settings else { return }
+        lifecycleLog.info("Settings resigned key; visible=\(window.isVisible), minimized=\(window.isMiniaturized)")
     }
     private func showContextMenu() {
         let menu = NSMenu()

@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     var imagesDidRefresh: (() -> Void)?
     var nativeBarAnchor: (() -> CGRect?)?
     private var safeNativeBundles = Set<String>()
+    private var applicationMetadata: [String: ApplicationMetadata] = [:]
+    private var resolvedApplicationIDs = Set<String>()
     private var temporaryBundle: String?
     private var imageTask: Task<Void, Never>?
     private var imagesCapturedAt = Date.distantPast
@@ -159,8 +161,12 @@ final class AppModel: ObservableObject {
             .map { id in
                 let entries = grouped[id] ?? []
                 let system = SystemItemPolicy.isSystem(id)
-                return (id, entries.first?.appName ?? (system ? SystemItemPolicy.title(id) : id),
-                    entries.first?.icon ?? (system ? NSImage(systemSymbolName: SystemItemPolicy.symbol(id), accessibilityDescription: nil) : nil), entries.count)
+                if !system && entries.isEmpty && resolvedApplicationIDs.insert(id).inserted {
+                    applicationMetadata[id] = ApplicationMetadata.resolve(id)
+                }
+                let metadata = applicationMetadata[id]
+                return (id, entries.first?.appName ?? metadata?.name ?? (system ? SystemItemPolicy.title(id) : id),
+                    entries.first?.icon ?? metadata?.icon ?? (system ? NSImage(systemSymbolName: SystemItemPolicy.symbol(id), accessibilityDescription: nil) : nil), entries.count)
             }
     }
 
@@ -337,6 +343,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshManagedItems() {
+        applicationMetadata.removeAll(); resolvedApplicationIDs.removeAll()
         preparing.formUnion(unplaced); unplaced.removeAll()
         scan(); refreshImages(force: true); scheduleRulePreparation()
     }

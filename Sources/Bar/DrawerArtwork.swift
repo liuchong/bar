@@ -49,22 +49,33 @@ enum DrawerArtwork {
 
     static func applicationIcon() -> NSImage {
         NSImage(size: NSSize(width: 1024, height: 1024), flipped: false) { _ in
-            let bounds = NSRect(x: 52, y: 52, width: 920, height: 920)
-            let shape = NSBezierPath(roundedRect: bounds, xRadius: 210, yRadius: 210)
-            NSGraphicsContext.saveGraphicsState()
-            let shadow = NSShadow(); shadow.shadowColor = .black.withAlphaComponent(0.22)
-            shadow.shadowBlurRadius = 24; shadow.shadowOffset = NSSize(width: 0, height: -12); shadow.set()
-            NSColor.systemBlue.setFill(); shape.fill()
-            NSGraphicsContext.restoreGraphicsState()
-            NSGradient(starting: NSColor(srgbRed: 0.22, green: 0.70, blue: 1, alpha: 1),
-                       ending: NSColor(srgbRed: 0.08, green: 0.31, blue: 0.83, alpha: 1))!.draw(in: shape, angle: -90)
-            NSGraphicsContext.saveGraphicsState(); shape.addClip()
-            NSColor.white.withAlphaComponent(0.09).setFill()
-            NSBezierPath(ovalIn: NSRect(x: -150, y: 580, width: 1350, height: 500)).fill()
-            NSGraphicsContext.restoreGraphicsState()
-            NSColor.white.withAlphaComponent(0.28).setStroke(); shape.lineWidth = 3; shape.stroke()
-            draw(.closed, in: NSRect(x: 132, y: 132, width: 760, height: 760), color: .white)
+            drawApplicationIcon(in: NSRect(x: 0, y: 0, width: 1024, height: 1024))
             return true
         }
+    }
+
+    /// Render the shared vector at the exact destination resolution, without an image cache.
+    static func drawApplicationIcon(in rect: NSRect) {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let transform = NSAffineTransform()
+        transform.translateX(by: rect.minX, yBy: rect.minY)
+        transform.scaleX(by: rect.width / 1024, yBy: rect.height / 1024)
+        transform.concat()
+        let bounds = NSRect(x: 52, y: 52, width: 920, height: 920)
+        let shape = NSBezierPath(roundedRect: bounds, xRadius: 210, yRadius: 210)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow(); shadow.shadowColor = .black.withAlphaComponent(0.22)
+        shadow.shadowBlurRadius = 24; shadow.shadowOffset = NSSize(width: 0, height: -12); shadow.set()
+        NSColor.systemBlue.setFill(); shape.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSGradient(starting: NSColor(srgbRed: 0.22, green: 0.70, blue: 1, alpha: 1),
+                   ending: NSColor(srgbRed: 0.08, green: 0.31, blue: 0.83, alpha: 1))!.draw(in: shape, angle: -90)
+        NSGraphicsContext.saveGraphicsState(); shape.addClip()
+        NSColor.white.withAlphaComponent(0.09).setFill()
+        NSBezierPath(ovalIn: NSRect(x: -150, y: 580, width: 1350, height: 500)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.withAlphaComponent(0.28).setStroke(); shape.lineWidth = 3; shape.stroke()
+        draw(.closed, in: NSRect(x: 132, y: 132, width: 760, height: 760), color: .white)
     }
 }

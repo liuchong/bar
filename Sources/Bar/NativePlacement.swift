@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import BarCore
+import OSLog
 
 /// Native items that may need to open a menu belong before Bar. This is a setup operation,
 /// never part of opening, closing or periodically refreshing the drawer.
@@ -10,6 +11,27 @@ enum NativePlacement {
     private static var heldPoint: CGPoint?
     static func releaseInput() {
         if let heldPoint { post(.leftMouseUp, at: heldPoint, command: true) }
+    }
+    @MainActor private struct SettingsFocus {
+        weak var window: NSWindow?
+        let owners: Set<String>
+        init(owners: Set<String>) {
+            let key = NSApp?.keyWindow
+            window = NSApp?.isActive == true && key?.identifier?.rawValue == "Bar.Settings" ? key : nil
+            self.owners = owners.union([Bundle.main.bundleIdentifier ?? "com.liuchong.bar",
+                "com.apple.MenuBarAgent", "com.apple.systemuiserver", "com.apple.controlcenter"])
+        }
+        func restore() {
+            guard let app = NSApp, let window, window.isVisible, !window.isMiniaturized, !app.isHidden,
+                  !app.isActive || !window.isKeyWindow,
+                  let owner = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                  owners.contains(owner) else { return }
+            // Restore only focus lost to the native placement gesture. An unrelated
+            // application chosen by the user must keep its focus.
+            app.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            Logger(subsystem: "com.liuchong.bar", category: "Lifecycle").notice("Settings focus restored after native placement")
+        }
     }
     /// Pins remain native status items. Reorder only after a configuration or application change.
     static func order(_ items: [MenuItem], side: ItemSide, anchor: @escaping () -> CGRect?,
@@ -36,12 +58,15 @@ enum NativePlacement {
         guard let bar = anchor() else { return Set(items.map(\.bundle)) }
         if matches(bar) { return [] }
         let pointer = CGEvent(source: nil)?.location
+        let focus = SettingsFocus(owners: Set(items.map(\.bundle)))
+        var inputPosted = false
         var lastPosted: CGPoint?
         defer {
             if let pointer, let lastPosted, let now = CGEvent(source: nil)?.location,
                NSEvent.pressedMouseButtons == 0, hypot(now.x - lastPosted.x, now.y - lastPosted.y) < 8 {
                 post(.mouseMoved, at: pointer, command: false)
             }
+            if inputPosted { focus.restore() }
         }
         let sequence = side == .left ? items : Array(items.reversed())
         for original in sequence {
@@ -59,6 +84,7 @@ enum NativePlacement {
             post(.mouseMoved, at: source, command: false)
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return [] }
+            inputPosted = true
             post(.leftMouseDown, at: source, command: true)
             for step in 1...12 {
                 if Task.isCancelled { break }
@@ -89,12 +115,15 @@ enum NativePlacement {
         defer { arranging = false }
         var safe = Set<String>()
         let pointer = CGEvent(source: nil)?.location
+        let focus = SettingsFocus(owners: Set(items.map(\.bundle)))
+        var inputPosted = false
         var lastPosted: CGPoint?
         defer {
             if let pointer, let lastPosted, let now = CGEvent(source: nil)?.location,
                NSEvent.pressedMouseButtons == 0, hypot(now.x - lastPosted.x, now.y - lastPosted.y) < 8 {
                 CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pointer, mouseButton: .left)?.post(tap: .cghidEventTap)
             }
+            if inputPosted { focus.restore() }
         }
         for bundle in Set(items.map(\.bundle)).sorted() {
             var entries = await scan(bundle)
@@ -118,6 +147,7 @@ enum NativePlacement {
                 post(.mouseMoved, at: source, command: false)
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return safe }
+                inputPosted = true
                 post(.leftMouseDown, at: source, command: true)
                 for step in 1...12 {
                     if Task.isCancelled { break }

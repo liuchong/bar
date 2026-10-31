@@ -155,6 +155,8 @@ struct SettingsView: View {
             HStack {
                 TextField("搜索应用", text: $search).textFieldStyle(.roundedBorder)
                 Button { model.scan(); model.refreshImages(force: true) } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.glass).buttonBorderShape(.circle)
+                    .accessibilityLabel("刷新图标")
                     .help("刷新图标").disabled(model.capturingImages)
             }.padding(16)
             if let message = model.message ?? model.imageMessage {

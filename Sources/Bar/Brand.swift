@@ -8,8 +8,14 @@ enum Brand {
         return menuIcon(expanded: true)
     }()
     static func menuIcon(expanded: Bool = false, paused: Bool = false, style: ExpansionStyle = .below) -> NSImage {
-        // A frontal, upright box fills the fixed status-item canvas in every state.
+        // Keep the fixed canvas; inset the glyph slightly to match neighboring status symbols.
         let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let inset = NSAffineTransform()
+            inset.translateX(by: 0.5, yBy: 0.5)
+            inset.scale(by: 0.95)
+            inset.concat()
             NSColor.black.setStroke()
             let box = NSBezierPath()
             box.lineWidth = 2.2; box.lineCapStyle = .round; box.lineJoinStyle = .round
@@ -30,7 +36,7 @@ enum Brand {
                 arrow.stroke()
             } else {
                 box.lineWidth = 1.9
-                box.appendRoundedRect(NSRect(x: 2, y: 3, width: 16, height: 14), xRadius: 1, yRadius: 1)
+                box.appendRoundedRect(NSRect(x: 2, y: 3, width: 16, height: 14), xRadius: 2.2, yRadius: 2.2)
                 box.move(to: NSPoint(x: 2, y: 13)); box.line(to: NSPoint(x: 8, y: 13))
                 box.move(to: NSPoint(x: 12, y: 13)); box.line(to: NSPoint(x: 18, y: 13))
                 if paused {

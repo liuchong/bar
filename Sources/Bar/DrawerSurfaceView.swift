@@ -17,7 +17,7 @@ final class DrawerSurfaceView: NSView {
         blur.material = .menu
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.alphaValue = 0.18
+        blur.alphaValue = 0.10
         blur.autoresizingMask = [.width, .height]
         addSubview(blur)
     }
@@ -27,7 +27,7 @@ final class DrawerSurfaceView: NSView {
         blur.isHidden = style == .left
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
-        layer?.cornerRadius = style == .left ? 0 : 6
+        layer?.cornerRadius = 0
         layer?.masksToBounds = style == .below
     }
     override func layout() {

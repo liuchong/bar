@@ -108,7 +108,7 @@ final class BarController: NSObject, NSWindowDelegate {
         model.setExpanded(open)
         status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused, style: style)
         if !open { drawerAnchor = nil }
-        guard open, model.visibilitySettled, !model.menuIsActive, settings?.isVisible != true,
+        guard open, model.visibilitySettled, !model.menuIsActive,
               let button = status.button, let window = button.window, !model.collected.isEmpty else { hidePanels(); return }
         let screen = window.screen ?? NSScreen.main!
         let currentAnchor = window.convertToScreen(button.convert(button.bounds, to: nil))
@@ -134,7 +134,7 @@ final class BarController: NSObject, NSWindowDelegate {
                 } else { groups.append((placement.frame, [ordered[placement.index]])) }
             }
         } else {
-            var row: [DrawerEntry] = [], width: CGFloat = 0, y = anchor.minY - height - 2
+            var row: [DrawerEntry] = [], width: CGFloat = 0, y = anchor.minY - height
             let maximum = screen.frame.width - 16
             func appendRow() {
                 guard !row.isEmpty else { return }
@@ -155,7 +155,7 @@ final class BarController: NSObject, NSWindowDelegate {
             let group = groups[index]
             let background = panel.contentView as! DrawerSurfaceView
             background.configure(style: style)
-            panel.hasShadow = style == .below
+            panel.hasShadow = false
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let dark = displayID.flatMap { MenuBarImages.backgroundDark[$0] }
             panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! } ?? button.effectiveAppearance
@@ -212,7 +212,6 @@ final class BarController: NSObject, NSWindowDelegate {
     }
 
     func showSettings() {
-        hidePanels()
         if settings == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 670, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -223,6 +222,7 @@ final class BarController: NSObject, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settings?.makeKeyAndOrderFront(nil)
+        render()
         model.scan()
     }
     func windowWillClose(_ notification: Notification) {

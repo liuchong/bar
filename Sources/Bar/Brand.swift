@@ -8,19 +8,37 @@ enum Brand {
         return menuIcon(expanded: true)
     }()
     static func menuIcon(expanded: Bool = false, paused: Bool = false, style: ExpansionStyle = .below) -> NSImage {
-        let name = paused ? "pause.circle" : (expanded ? "tray.and.arrow.down" : "shippingbox")
-        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: Brand.name)!
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            NSGraphicsContext.saveGraphicsState()
-            let transform = NSAffineTransform()
-            transform.translateX(by: 9, yBy: 9)
-            // The native downward tray arrow rotates clockwise to point left.
-            if expanded && !paused && style == .left { transform.rotate(byDegrees: -90) }
-            transform.concat()
-            let scale = min(17 / symbol.size.width, 17 / symbol.size.height)
-            let size = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
-            symbol.draw(in: NSRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height))
-            NSGraphicsContext.restoreGraphicsState()
+        // A frontal, upright box fills the fixed status-item canvas in every state.
+        let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
+            NSColor.black.setStroke()
+            let box = NSBezierPath()
+            box.lineWidth = 2.2; box.lineCapStyle = .round; box.lineJoinStyle = .round
+            if expanded && !paused {
+                box.move(to: NSPoint(x: 2, y: 12))
+                box.line(to: NSPoint(x: 2, y: 3))
+                box.line(to: NSPoint(x: 18, y: 3))
+                box.line(to: NSPoint(x: 18, y: 12))
+                let arrow = NSBezierPath()
+                arrow.lineWidth = 2.2; arrow.lineCapStyle = .round; arrow.lineJoinStyle = .round
+                if style == .left {
+                    arrow.move(to: NSPoint(x: 17, y: 16)); arrow.line(to: NSPoint(x: 4, y: 16))
+                    arrow.move(to: NSPoint(x: 7, y: 19)); arrow.line(to: NSPoint(x: 4, y: 16)); arrow.line(to: NSPoint(x: 7, y: 13))
+                } else {
+                    arrow.move(to: NSPoint(x: 10, y: 18)); arrow.line(to: NSPoint(x: 10, y: 8))
+                    arrow.move(to: NSPoint(x: 6.5, y: 11.5)); arrow.line(to: NSPoint(x: 10, y: 8)); arrow.line(to: NSPoint(x: 13.5, y: 11.5))
+                }
+                arrow.stroke()
+            } else {
+                box.appendRoundedRect(NSRect(x: 2, y: 3, width: 16, height: 14), xRadius: 1, yRadius: 1)
+                box.move(to: NSPoint(x: 2, y: 12)); box.line(to: NSPoint(x: 18, y: 12))
+                if paused {
+                    box.move(to: NSPoint(x: 7, y: 6)); box.line(to: NSPoint(x: 7, y: 9))
+                    box.move(to: NSPoint(x: 13, y: 6)); box.line(to: NSPoint(x: 13, y: 9))
+                } else {
+                    box.move(to: NSPoint(x: 10, y: 17)); box.line(to: NSPoint(x: 10, y: 8))
+                }
+            }
+            box.stroke()
             return true
         }
         image.isTemplate = true

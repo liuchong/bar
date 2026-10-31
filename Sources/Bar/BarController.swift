@@ -50,6 +50,9 @@ final class BarController: NSObject, NSWindowDelegate {
         model.$items.sink { [weak self] _ in
             DispatchQueue.main.async { self?.render() }
         }.store(in: &subscriptions)
+        model.$imageAccess.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.render() }
+        }.store(in: &subscriptions)
         model.$trusted.sink { [weak self] _ in
             DispatchQueue.main.async { self?.render() }
         }.store(in: &subscriptions)
@@ -103,7 +106,7 @@ final class BarController: NSObject, NSWindowDelegate {
     func render() {
         let open = state.expanded && model.trusted && !model.paused
         model.setExpanded(open)
-        status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused)
+        status.button?.image = Brand.menuIcon(expanded: open, paused: model.paused, style: style)
         if !open { drawerAnchor = nil }
         guard open, model.visibilitySettled, !model.menuIsActive, settings?.isVisible != true,
               let button = status.button, let window = button.window, !model.collected.isEmpty else { hidePanels(); return }
@@ -112,16 +115,16 @@ final class BarController: NSObject, NSWindowDelegate {
         if drawerAnchor == nil { drawerAnchor = currentAnchor }
         let anchor = drawerAnchor!
         let height = max(24, NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-        var groups: [(frame: CGRect, items: [MenuItem])] = []
+        var groups: [(frame: CGRect, items: [DrawerEntry])] = []
         if style == .left {
-            let ordered = Array(model.collected.reversed())
+            let ordered = Array(model.drawerEntries.reversed())
             var cutout: CGRect?
             if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
                right.minX > left.maxX {
                 cutout = CGRect(x: left.maxX, y: screen.frame.maxY - height,
                                 width: right.minX - left.maxX, height: height)
             }
-            let placements = DrawerLayout.left(widths: ordered.map(model.iconWidth), screen: screen.frame,
+            let placements = DrawerLayout.left(widths: ordered.map(\.width), screen: screen.frame,
                                                anchor: anchor, cutout: cutout, height: height)
                 .sorted { $0.frame.minY == $1.frame.minY ? $0.frame.minX < $1.frame.minX : $0.frame.minY > $1.frame.minY }
             for placement in placements {
@@ -131,7 +134,7 @@ final class BarController: NSObject, NSWindowDelegate {
                 } else { groups.append((placement.frame, [ordered[placement.index]])) }
             }
         } else {
-            var row: [MenuItem] = [], width: CGFloat = 0, y = anchor.minY - height - 2
+            var row: [DrawerEntry] = [], width: CGFloat = 0, y = anchor.minY - height - 2
             let maximum = screen.frame.width - 16
             func appendRow() {
                 guard !row.isEmpty else { return }
@@ -139,8 +142,8 @@ final class BarController: NSObject, NSWindowDelegate {
                 groups.append((CGRect(x: x, y: y, width: width, height: height), row))
                 y -= height; row = []; width = 0
             }
-            for item in model.collected {
-                let next = model.iconWidth(item)
+            for item in model.drawerEntries {
+                let next = item.width
                 if width + next > maximum { appendRow() }
                 row.append(item); width += next
             }
@@ -150,20 +153,20 @@ final class BarController: NSObject, NSWindowDelegate {
         for (index, panel) in panels.enumerated() {
             guard index < groups.count else { panel.orderOut(nil); continue }
             let group = groups[index]
-            let background = panel.contentView as! NSGlassEffectView
-            background.cornerRadius = style == .left ? 0 : 6
+            let background = panel.contentView as! DrawerSurfaceView
+            background.configure(style: style)
             panel.hasShadow = style == .below
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let dark = displayID.flatMap { MenuBarImages.backgroundDark[$0] }
-            panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! }
+            panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! } ?? button.effectiveAppearance
             panel.setFrame(group.frame, display: true)
             let root = DrawerView(model: model, items: group.items, height: height)
-            if let hosting = background.contentView as? NSHostingView<DrawerView> {
+            if let hosting = background.hosting as? NSHostingView<DrawerView> {
                 hosting.rootView = root; hosting.frame = background.bounds
             } else {
                 let hosting = NSHostingView(rootView: root)
                 hosting.frame = background.bounds; hosting.autoresizingMask = [.width, .height]
-                background.contentView = hosting
+                background.hosting = hosting; background.addSubview(hosting)
             }
             panel.orderFrontRegardless()
         }
@@ -176,9 +179,7 @@ final class BarController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false; panel.backgroundColor = .clear
         panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
-        let background = NSGlassEffectView()
-        background.style = .clear; background.effectIsInteractive = true
-        panel.contentView = background
+        panel.contentView = DrawerSurfaceView()
         return panel
     }
     private func hidePanels() { panels.forEach { $0.orderOut(nil) } }

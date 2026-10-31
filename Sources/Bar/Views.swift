@@ -5,38 +5,46 @@ import UniformTypeIdentifiers
 
 struct DrawerView: View {
     @ObservedObject var model: AppModel
-    let items: [MenuItem]
+    let items: [DrawerEntry]
     let height: CGFloat
     @State private var dragging: String?
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(items) { item in
-                Button { model.open(item) } label: {
-                    Group {
-                        if let original = model.menuImages[item.id] {
-                            Image(nsImage: original.image).interpolation(.high)
-                        } else {
-                            Image(systemName: "ellipsis").font(.system(size: 14))
+            ForEach(items) { entry in
+                if let item = entry.item {
+                    Button { model.open(item) } label: {
+                        Group {
+                            if let original = model.menuImages[item.id] {
+                                Image(nsImage: original.image).interpolation(.high)
+                            }
                         }
+                        .frame(width: model.iconWidth(item), height: height)
+                        .contentShape(Rectangle())
                     }
-                    .frame(width: model.iconWidth(item), height: height)
-                    .contentShape(Rectangle())
+                    .buttonStyle(MenuGlyphButtonStyle())
+                    .accessibilityLabel(item.appName + "，" + item.label)
+                    .help(model.menuImages[item.id] == nil ? "\(item.appName) · 等待菜单栏图像授权或刷新" : item.label)
+                    .contextMenu {
+                        Button("打开菜单") { model.open(item, right: true) }
+                        Divider()
+                        Button("不管理") { model.setDisposition(item.bundle, .untouched) }
+                        Button("隐藏") { model.setDisposition(item.bundle, .hidden) }
+                        Divider()
+                        Button("向前移动") { model.move(item.bundle, direction: -1) }
+                        Button("向后移动") { model.move(item.bundle, direction: 1) }
+                    }
+                    .onDrag { dragging = item.bundle; return NSItemProvider(object: item.bundle as NSString) }
+                    .onDrop(of: [.text], delegate: DrawerDrop(model: model, target: item.bundle, dragging: $dragging))
+                } else {
+                    Button { model.requestImageAccess() } label: {
+                        Label(model.imageAccess ? "刷新图标图像" : "允许图标图像…", systemImage: model.imageAccess ? "arrow.clockwise" : "lock")
+                            .font(.system(size: 12)).padding(.horizontal, 6)
+                            .frame(width: entry.width, height: height)
+                    }
+                    .buttonStyle(MenuGlyphButtonStyle())
+                    .help(model.imageAccess ? "重新读取缺失的原菜单栏图像" : "需要屏幕录制权限才能显示原菜单栏图标")
                 }
-                .buttonStyle(MenuGlyphButtonStyle())
-                .accessibilityLabel(item.appName + "，" + item.label)
-                .help(model.menuImages[item.id] == nil ? "\(item.appName) · 等待菜单栏图像授权或刷新" : item.label)
-                .contextMenu {
-                    Button("打开菜单") { model.open(item, right: true) }
-                    Divider()
-                    Button("不管理") { model.setDisposition(item.bundle, .untouched) }
-                    Button("隐藏") { model.setDisposition(item.bundle, .hidden) }
-                    Divider()
-                    Button("向前移动") { model.move(item.bundle, direction: -1) }
-                    Button("向后移动") { model.move(item.bundle, direction: 1) }
-                }
-                .onDrag { dragging = item.bundle; return NSItemProvider(object: item.bundle as NSString) }
-                .onDrop(of: [.text], delegate: DrawerDrop(model: model, target: item.bundle, dragging: $dragging))
             }
         }.fixedSize()
     }

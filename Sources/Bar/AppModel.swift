@@ -73,6 +73,13 @@ final class AppModel: ObservableObject {
             }
     }
 
+    var drawerEntries: [DrawerEntry] {
+        let ready = collected.filter { menuImages[$0.id] != nil }
+        var entries = ready.map { DrawerEntry(item: $0, width: iconWidth($0)) }
+        if ready.count != collected.count { entries.append(DrawerEntry(item: nil, width: 116)) }
+        return entries
+    }
+
     func iconWidth(_ item: MenuItem) -> CGFloat {
         max(22, menuImages[item.id]?.width ?? min(32, item.frame.width))
     }
@@ -187,15 +194,21 @@ final class AppModel: ObservableObject {
 
     func requestImageAccess() {
         MenuBarImages.requestAccess()
-        imageAccess = imageAuthorization()
+        if imageAuthorization() {
+            initialCaptureComplete = false; safeNativeBundles = []; releaseVisibility()
+        }
         refreshImages(force: true)
     }
 
     func refreshImages(force: Bool = false) {
+        let previouslyAuthorized = imageAccess
         imageAccess = imageAuthorization()
+        if !previouslyAuthorized && imageAccess {
+            initialCaptureComplete = false; safeNativeBundles = []; releaseVisibility()
+        }
         guard !stopping, trusted, !menuIsActive, imageTask == nil else { return }
         if !imageAccess {
-            imageMessage = "收纳和隐藏可正常使用。尚未允许屏幕录制，抽屉暂用占位符；允许后才能显示原菜单栏图像。"
+            imageMessage = "收纳和隐藏可正常使用。尚未允许屏幕录制，展开后可点击“允许图标图像…”完成授权，再显示原菜单栏图标。"
             // Image permission affects glyphs only. Native placement and visibility must still initialize.
             if initialCaptureComplete { return }
         }

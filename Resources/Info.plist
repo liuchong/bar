@@ -6,7 +6,7 @@
     <key>CFBundleName</key><string>Bar</string>
     <key>CFBundleDisplayName</key><string>Bar</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleIconFile</key><string>Bar</string>
+    <key>CFBundleIconFile</key><string>Bar.icns</string>
     <key>LSMinimumSystemVersion</key><string>27.2</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

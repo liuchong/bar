@@ -18,4 +18,6 @@ fi
 mkdir -p "$destination"
 ditto dist/Bar.app "$destination/Bar.app"
 codesign --verify --strict "$destination/Bar.app"
+touch "$destination/Bar.app"
+swift -e 'import Foundation; import CoreServices; let url = URL(fileURLWithPath: CommandLine.arguments[1]); let result = LSRegisterURL(url as CFURL, true); guard result == noErr else { fatalError("Application registration failed: \(result)") }' "$destination/Bar.app"
 echo "Installed: $destination/Bar.app"

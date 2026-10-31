@@ -71,7 +71,7 @@ final class MenuBarImages {
 
     /// Estimate the wallpaper behind each pixel from the quiet top/bottom margins of its column.
     /// Keep original color for colored status glyphs; monochrome glyphs become adaptive templates.
-    private static func extract(_ image: CGImage, points: CGSize) -> MenuBarImage? {
+    static func extract(_ image: CGImage, points: CGSize) -> MenuBarImage? {
         let w = image.width, h = image.height
         guard w > 2, h > 4, w < 2048, h < 256 else { return nil }
         var pixels = [UInt8](repeating: 0, count: w * h * 4)
@@ -94,7 +94,16 @@ final class MenuBarImages {
                     if alpha > 0.6 {
                         foreground += 1
                         brightness += (rgb[0] + rgb[1] + rgb[2]) / 3
-                        if (rgb.max()! - rgb.min()!) > 45 { colorful += 1 }
+                        // Anti-aliasing mixes white glyph edges with colorful wallpaper.
+                        // Test that mixture, rather than treating its tinted edges as a colored icon.
+                        let residual = [0.0, 255.0].map { target -> Double in
+                            let direction = background.map { target - $0 }
+                            let delta = zip(rgb, background).map { $0 - $1 }
+                            let length = direction.reduce(0) { $0 + $1 * $1 }
+                            let fraction = min(1, max(0, zip(delta, direction).reduce(0) { $0 + $1.0 * $1.1 } / max(1, length)))
+                            return zip(delta, direction).map { abs($0 - fraction * $1) }.max() ?? 0
+                        }.min() ?? 255
+                        if residual > 18 { colorful += 1 }
                     }
                     for c in 0..<3 { buffer[i + c] = UInt8(min(255, max(0, rgb[c] * alpha))) }
                     buffer[i + 3] = UInt8(alpha * 255)

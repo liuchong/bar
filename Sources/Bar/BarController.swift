@@ -99,6 +99,7 @@ final class BarController: NSObject, NSWindowDelegate {
     }
 
     private func configurationChanged() {
+        drawerAnchor = nil
         if behavior != model.configuration.behavior {
             behavior = model.configuration.behavior; state.configure(behavior)
         }
@@ -118,9 +119,15 @@ final class BarController: NSObject, NSWindowDelegate {
         if drawerAnchor == nil { drawerAnchor = currentAnchor }
         let anchor = drawerAnchor!
         let height = max(24, NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+        let leftItems = model.entries(on: .left)
+        let rightItems = model.entries(on: .right)
+        let leftPinned = model.pinned.filter { model.configuration.side(for: $0.bundle) == .left && $0.frame.maxX <= anchor.minX + 1 }
+        let rightPinned = model.pinned.filter { model.configuration.side(for: $0.bundle) == .right && $0.frame.minX >= anchor.maxX - 1 }
+        let leftEdge = min(anchor.minX, leftPinned.map { $0.frame.minX }.min() ?? anchor.minX)
+        let rightEdge = max(anchor.maxX, rightPinned.map { $0.frame.maxX }.max() ?? anchor.maxX)
         var groups: [(frame: CGRect, items: [DrawerEntry])] = []
         if style == .left {
-            let ordered = Array(model.drawerEntries.reversed())
+            let ordered = Array(leftItems.reversed())
             var cutout: CGRect?
             if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
                right.minX > left.maxX {
@@ -128,7 +135,7 @@ final class BarController: NSObject, NSWindowDelegate {
                                 width: right.minX - left.maxX, height: height)
             }
             let placements = DrawerLayout.left(widths: ordered.map(\.width), screen: screen.frame,
-                                               anchor: anchor, cutout: cutout, height: height)
+                                               anchor: CGRect(x: leftEdge, y: anchor.minY, width: anchor.width, height: anchor.height), cutout: cutout, height: height)
                 .sorted { $0.frame.minY == $1.frame.minY ? $0.frame.minX < $1.frame.minX : $0.frame.minY > $1.frame.minY }
             for placement in placements {
                 if let last = groups.last, abs(last.frame.maxX - placement.frame.minX) < 1,
@@ -141,31 +148,53 @@ final class BarController: NSObject, NSWindowDelegate {
             // Start below the full menu-bar region, rather than below the button's inset bounds.
             let menuBarBottom = min(screen.frame.maxY - height, screen.visibleFrame.maxY)
             var row: [DrawerEntry] = [], width: CGFloat = 0
-            let maximum = screen.frame.width - 16
+            let maximum = max(116, leftEdge - screen.frame.minX - 8)
             func appendRow() {
                 guard !row.isEmpty else { return }
-                let frame = DrawerLayout.belowRow(width: width, screen: screen.frame, anchor: anchor,
+                let leftAnchor = CGRect(x: leftEdge - anchor.width, y: anchor.minY, width: anchor.width, height: anchor.height)
+                let frame = DrawerLayout.belowRow(width: width, screen: screen.frame, anchor: leftAnchor,
                     menuBarBottom: menuBarBottom, height: height, row: groups.count,
                     backingScale: screen.backingScaleFactor)
                 groups.append((frame, row))
                 row = []; width = 0
             }
-            for item in model.drawerEntries {
+            for item in leftItems {
                 let next = item.width
                 if width + next > maximum { appendRow() }
                 row.append(item); width += next
             }
             appendRow()
         }
+        // Right-side collection uses the row below, preserving the occupied native right band.
+        let rightMaximum = max(116, screen.frame.maxX - rightEdge - 10)
+        var rightRow: [DrawerEntry] = [], rightWidth: CGFloat = 0, rightRowIndex = 0
+        func appendRightRow() {
+            guard !rightRow.isEmpty else { return }
+            let x = min(max(screen.frame.minX + 8, rightEdge + 2), screen.frame.maxX - rightWidth - 8)
+            let top = min(screen.frame.maxY - height, screen.visibleFrame.maxY) - 1 / screen.backingScaleFactor
+            let frame = CGRect(x: x, y: top - height * CGFloat(rightRowIndex + 1), width: rightWidth, height: height)
+            if !groups.contains(where: { $0.frame.intersects(frame) }) { groups.append((frame, rightRow)) }
+            else {
+                let bottom = groups.map { $0.frame.minY }.min() ?? top
+                groups.append((CGRect(x: x, y: bottom - height, width: rightWidth, height: height), rightRow))
+            }
+            rightRowIndex += 1; rightWidth = 0; rightRow = []
+        }
+        for entry in rightItems {
+            if rightWidth + entry.width > rightMaximum { appendRightRow() }
+            rightRow.append(entry); rightWidth += entry.width
+        }
+        appendRightRow()
         while panels.count < groups.count { panels.append(makePanel()) }
         for (index, panel) in panels.enumerated() {
             guard index < groups.count else { panel.orderOut(nil); continue }
             let group = groups[index]
             let background = panel.contentView as! DrawerSurfaceView
-            background.configure(style: style)
+            let isLowerRow = group.frame.maxY < screen.frame.maxY - height
+            background.configure(style: isLowerRow ? .below : .left)
             panel.hasShadow = false
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-            let dark = (style == .below ? lowerContrast[index] : nil)
+            let dark = (isLowerRow ? lowerContrast[index] : nil)
                 ?? displayID.flatMap { MenuBarImages.backgroundDark[$0] }
             panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! } ?? button.effectiveAppearance
             panel.setFrame(group.frame, display: true)
@@ -183,7 +212,7 @@ final class BarController: NSObject, NSWindowDelegate {
     }
 
     private func refreshContrast() {
-        guard style == .below, contrastTask == nil, !model.capturingImages, MenuBarImages.authorized,
+        guard contrastTask == nil, !model.capturingImages, MenuBarImages.authorized,
               Date().timeIntervalSince(lastContrastSample) >= 0.8 else { return }
         let frames = panels.filter(\.isVisible).map(\.frame)
         guard !frames.isEmpty else { return }
@@ -191,7 +220,7 @@ final class BarController: NSObject, NSWindowDelegate {
         contrastTask = Task { [weak self] in
             defer { self?.contrastTask = nil }
             guard let samples = try? await DrawerContrast.sample(frames), !Task.isCancelled,
-                  let self, self.style == .below,
+                  let self,
                   self.panels.filter(\.isVisible).map(\.frame) == frames else { return }
             for (index, value) in samples.enumerated() {
                 guard let value else { continue }
@@ -235,7 +264,7 @@ final class BarController: NSObject, NSWindowDelegate {
         }
         let previous = state.expanded
         state.tick(now: ProcessInfo.processInfo.systemUptime, inside: inside,
-                   interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages ||
+                   interacting: contextOpen || trackingMenus > 0 || model.menuIsActive || model.capturingImages || model.orderingItems ||
                        (style == .left && model.externalMenuOpen) || settings?.isVisible == true,
                    configuration: model.configuration)
         if previous != state.expanded { render() }

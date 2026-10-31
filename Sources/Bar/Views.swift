@@ -30,6 +30,10 @@ struct DrawerView: View {
                         Divider()
                         Button("不管理") { model.setDisposition(item.bundle, .untouched) }
                         Button("隐藏") { model.setDisposition(item.bundle, .hidden) }
+                        Button("始终显示") { model.setDisposition(item.bundle, .pinned) }
+                        ForEach(ItemSide.allCases, id: \.self) { side in
+                            Button("移到" + side.title) { model.setSide(item.bundle, side) }
+                        }
                         Divider()
                         Button("向前移动") { model.move(item.bundle, direction: -1) }
                         Button("向后移动") { model.move(item.bundle, direction: 1) }
@@ -69,7 +73,7 @@ struct DrawerDrop: DropDelegate {
         var available = model.applications.map(\.id)
         guard let from = available.firstIndex(of: dragging), let to = available.firstIndex(of: target) else { return }
         available.remove(at: from); available.insert(dragging, at: to)
-        model.update { $0.order = available }
+        model.update { $0.order = available; $0.sides[dragging] = $0.side(for: target) }
     }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
     func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
@@ -163,35 +167,79 @@ struct SettingsView: View {
                 Text(message).font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
             }
+            HStack {
+                Text("常显项目保留原生图标，并按左右分区恢复顺序。").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("重新整理常显顺序") { model.retryPinnedOrder() }
+                    .disabled(model.orderingItems || model.pinned.isEmpty)
+            }.padding(.horizontal, 16).padding(.bottom, 8)
+            if model.orderingVerified { Text("常显位置与顺序已核对").font(.caption).foregroundStyle(.secondary) }
+            if let message = model.orderingMessage { Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16) }
             List {
-                ForEach(model.applications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }, id: \.id) { app in
-                    HStack(spacing: 10) {
-                        Image(nsImage: app.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
-                            .resizable().scaledToFit().frame(width: 24, height: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(app.name).lineLimit(1)
-                            Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        Picker(app.name, selection: Binding(get: { model.configuration.disposition(for: app.id) }, set: {
-                            model.setDisposition(app.id, $0)
-                        })) {
-                            ForEach(ItemDisposition.allCases, id: \.self) { Text($0.title).tag($0) }
-                        }.labelsHidden().frame(width: 90)
-                        HStack(spacing: 8) {
-                            Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
-                                .help("向前移动").accessibilityLabel("\(app.name) 向前移动")
-                                .disabled(model.applications.first?.id == app.id)
-                            Button { model.move(app.id, direction: 1) } label: { Image(systemName: "chevron.down") }
-                                .help("向后移动").accessibilityLabel("\(app.name) 向后移动")
-                                .disabled(model.applications.last?.id == app.id)
-                        }.buttonStyle(.borderless)
-                    }.padding(.vertical, 6)
+                ForEach(ItemSide.allCases, id: \.self) { side in
+                    Section(side.title) {
+                        ForEach(filteredApplications.filter { model.configuration.disposition(for: $0.id) != .untouched && model.configuration.side(for: $0.id) == side }, id: \.id) { app in
+                            applicationRow(app, managed: true)
+                        }
+                    }
+                }
+                Section("不管理") {
+                    ForEach(filteredApplications.filter { model.configuration.disposition(for: $0.id) == .untouched }, id: \.id) { app in
+                        applicationRow(app, managed: false)
+                    }
+                }
+                Section("系统项目 · 当前保留原样") {
+                    ForEach(model.systemItems.filter { search.isEmpty || $0.label.localizedCaseInsensitiveContains(search) }, id: \.id) { item in
+                        HStack(spacing: 10) {
+                            Image(systemName: "gearshape").frame(width: 24, height: 24).foregroundStyle(.secondary)
+                            Text(item.label).lineLimit(1)
+                            Spacer()
+                            Text("由 macOS 管理").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 6)
+                    }
+                    Text("系统项目目前不参与 Bar 收纳和排序。可在系统设置的“菜单栏”中调整支持的项目；未识别的项目也不会被 Bar 隐藏。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }.listStyle(.inset)
-            Text("收纳到抽屉、保持隐藏或不管理。排序同时作用于向左和向下展开，也可以在抽屉中拖动。相同应用的图标统一管理。")
+            Text("不管理的项目保留系统原生位置，不参与 Bar 排序。左右分区独立排序；“始终显示”仍由 Bar 管理原生位置。“按需收纳”遵循通用页显隐方式，右栏在下方展开以避开右侧原生图标。退出后保留分区、显示规则和顺序。")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
+    }
+    private var filteredApplications: [(id: String, name: String, icon: NSImage?, count: Int)] {
+        model.applications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }
+    }
+    private func applicationRow(_ app: (id: String, name: String, icon: NSImage?, count: Int), managed: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(nsImage: app.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
+                .resizable().scaledToFit().frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name).lineLimit(1)
+                Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if managed {
+                Picker("\(app.name) 所在分区", selection: Binding(get: { model.configuration.side(for: app.id) }, set: {
+                    model.setSide(app.id, $0)
+                })) {
+                    ForEach(ItemSide.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.labelsHidden().frame(width: 70)
+            }
+            Picker(app.name, selection: Binding(get: { model.configuration.disposition(for: app.id) }, set: {
+                model.setDisposition(app.id, $0)
+            })) {
+                ForEach(ItemDisposition.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.labelsHidden().frame(width: 90)
+            if managed {
+                HStack(spacing: 8) {
+                    Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
+                        .help("向前移动").accessibilityLabel("\(app.name) 向前移动")
+                        .disabled(!model.canMove(app.id, direction: -1))
+                    Button { model.move(app.id, direction: 1) } label: { Image(systemName: "chevron.down") }
+                        .help("向后移动").accessibilityLabel("\(app.name) 向后移动")
+                        .disabled(!model.canMove(app.id, direction: 1))
+                }.buttonStyle(.borderless)
+            }
+        }.padding(.vertical, 6)
     }
     private var behaviorDescription: String {
         switch model.configuration.behavior {

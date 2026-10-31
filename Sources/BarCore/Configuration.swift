@@ -1,10 +1,15 @@
 import Foundation
 
 public enum ItemDisposition: String, Codable, CaseIterable, Sendable {
-    case untouched, collected, hidden
+    case untouched, collected, pinned, hidden
     public var title: String {
-        switch self { case .untouched: "不管理"; case .collected: "收纳"; case .hidden: "隐藏" }
+        switch self { case .untouched: "不管理"; case .collected: "按需收纳"; case .pinned: "始终显示"; case .hidden: "隐藏" }
     }
+}
+
+public enum ItemSide: String, Codable, CaseIterable, Sendable {
+    case left, right
+    public var title: String { self == .left ? "左栏" : "右栏" }
 }
 
 public enum ExpansionStyle: String, Codable, CaseIterable, Sendable {
@@ -22,11 +27,24 @@ public enum ExpansionBehavior: String, Codable, CaseIterable, Sendable {
 public struct Configuration: Codable, Equatable, Sendable {
     public var dispositions: [String: ItemDisposition] = [:]
     public var order: [String] = []
+    public var sides: [String: ItemSide] = [:]
     public var style: ExpansionStyle = .below
     public var behavior: ExpansionBehavior = .manual
     public var hoverDelay: Double = 0.25
     public var hideDelay: Double = 1.2
     public init() {}
+    enum CodingKeys: String, CodingKey { case dispositions, order, sides, style, behavior, hoverDelay, hideDelay }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        dispositions = try values.decodeIfPresent([String: ItemDisposition].self, forKey: .dispositions) ?? [:]
+        order = try values.decodeIfPresent([String].self, forKey: .order) ?? []
+        sides = try values.decodeIfPresent([String: ItemSide].self, forKey: .sides) ?? [:]
+        style = try values.decodeIfPresent(ExpansionStyle.self, forKey: .style) ?? .below
+        behavior = try values.decodeIfPresent(ExpansionBehavior.self, forKey: .behavior) ?? .manual
+        hoverDelay = try values.decodeIfPresent(Double.self, forKey: .hoverDelay) ?? 0.25
+        hideDelay = try values.decodeIfPresent(Double.self, forKey: .hideDelay) ?? 1.2
+    }
+    public func side(for bundle: String) -> ItemSide { sides[bundle] ?? .left }
 
     public func disposition(for bundle: String) -> ItemDisposition { dispositions[bundle] ?? .untouched }
 

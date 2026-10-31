@@ -8,6 +8,7 @@ import ServiceManagement
 final class AppModel: ObservableObject {
     @Published var configuration: Configuration
     @Published var items: [MenuItem] = []
+    @Published var systemItems: [SystemMenuItem] = []
     @Published var menuImages: [String: MenuBarImage] = [:]
     @Published var imageAccess = false
     @Published var capturingImages = false
@@ -24,6 +25,12 @@ final class AppModel: ObservableObject {
     private var acknowledgedAllowed: Set<String>?
     @Published var trusted = AXIsProcessTrusted()
     @Published var message: String?
+    @Published var orderingMessage: String?
+    @Published var orderingVerified = false
+    private var orderingTask: Task<Void, Never>?
+    var orderingItems: Bool { orderingTask != nil }
+    private var orderRevision = 0
+    private var checkedOrder = ""
     @Published var engineAvailable = BARVisibilityLease.isAvailable()
     @Published var expanded = false
     @Published var paused = false
@@ -73,12 +80,59 @@ final class AppModel: ObservableObject {
             }
     }
 
-    var drawerEntries: [DrawerEntry] {
-        let ready = collected.filter { menuImages[$0.id] != nil }
+    var pinned: [MenuItem] {
+        let ranks = Dictionary(configuration.sorted(items.map(\.bundle)).enumerated().map { ($1, $0) }, uniquingKeysWith: min)
+        return items.filter { configuration.disposition(for: $0.bundle) == .pinned }.sorted {
+            let a = ranks[$0.bundle] ?? 0, b = ranks[$1.bundle] ?? 0
+            return a == b ? $0.id.localizedStandardCompare($1.id) == .orderedAscending : a < b
+        }
+    }
+    func entries(on side: ItemSide) -> [DrawerEntry] {
+        let selected = collected.filter { configuration.side(for: $0.bundle) == side }
+        let ready = selected.filter { menuImages[$0.id] != nil }
         var entries = ready.map { DrawerEntry(item: $0, width: iconWidth($0)) }
-        if ready.count != collected.count { entries.append(DrawerEntry(item: nil, width: 116)) }
+        if ready.count != selected.count { entries.append(DrawerEntry(item: nil, width: 116)) }
         return entries
     }
+
+    var drawerEntries: [DrawerEntry] { entries(on: .left) + entries(on: .right) }
+
+    func setSide(_ bundle: String, _ side: ItemSide) {
+        update { $0.sides[bundle] = side }
+    }
+
+    func reconcilePinnedOrder() {
+        guard !stopping, !paused, trusted, visibilitySettled, !capturingImages, !menuIsActive, orderingTask == nil else { return }
+        let signature = String(orderRevision) + pinned.map { "\($0.id):\($0.pid):\(configuration.side(for: $0.bundle).rawValue):\(Int($0.frame.minX))" }.joined(separator: "|")
+        guard signature != checkedOrder else { return }
+        checkedOrder = signature
+        let configuration = configuration, selected = pinned, revision = orderRevision
+        orderingVerified = false
+        orderingTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.orderingTask = nil }
+            var failures = Set<String>()
+            for side in ItemSide.allCases {
+                let group = selected.filter { configuration.side(for: $0.bundle) == side }
+                let failed = await NativePlacement.order(group, side: side, anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
+                failures.formUnion(failed)
+            }
+            guard !Task.isCancelled else { return }
+            var refreshed: [MenuItem] = []
+            for bundle in Set(selected.map(\.bundle)) { refreshed += await self.freshItems(bundle) }
+            let ids = Set(refreshed.map(\.id))
+            self.items = self.items.filter { !ids.contains($0.id) } + refreshed
+            guard revision == self.orderRevision else {
+                self.checkedOrder = ""
+                DispatchQueue.main.async { self.reconcilePinnedOrder() }
+                return
+            }
+            self.orderingVerified = failures.isEmpty && !selected.isEmpty
+            self.orderingMessage = failures.isEmpty ? nil : "部分常显图标未能完成原生排序。请让图标在菜单栏可见、关闭菜单后点击“重新整理常显顺序”。"
+            self.presentationChanged?()
+        }
+    }
+    func retryPinnedOrder() { orderRevision += 1; reconcilePinnedOrder() }
 
     func iconWidth(_ item: MenuItem) -> CGFloat {
         max(22, menuImages[item.id]?.width ?? min(32, item.frame.width))
@@ -118,10 +172,12 @@ final class AppModel: ObservableObject {
         do { try store.save(next) }
         catch { message = "无法保存设置：\(error.localizedDescription)"; return }
         configuration = next
+        orderRevision += 1
         engineFailed = false
         applyVisibility()
         presentationChanged?()
         refreshImages()
+        reconcilePinnedOrder()
     }
 
     private func freshItems(_ bundle: String) async -> [MenuItem] {
@@ -136,7 +192,7 @@ final class AppModel: ObservableObject {
         let request = (dispositionRequests[bundle] ?? 0) + 1
         dispositionRequests[bundle] = request
         // Read a newly collected item while it is still visible. Never reveal hidden items to refresh.
-        let visible = items.filter { $0.bundle == bundle && configuration.disposition(for: bundle) == .untouched }
+        let visible = items.filter { $0.bundle == bundle && [ItemDisposition.untouched, .pinned].contains(configuration.disposition(for: bundle)) }
         guard mode == .collected, !visible.isEmpty else {
             update { $0.dispositions[bundle] = mode }; return
         }
@@ -153,10 +209,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func canMove(_ bundle: String, direction: Int) -> Bool {
+        let ids = applications.map(\.id).filter { configuration.disposition(for: $0) != .untouched && configuration.side(for: $0) == configuration.side(for: bundle) }
+        guard let index = ids.firstIndex(of: bundle) else { return false }
+        return ids.indices.contains(index + direction)
+    }
     func move(_ bundle: String, direction: Int) {
-        let ids = applications.map(\.id)
+        let ids = applications.map(\.id).filter { configuration.disposition(for: $0) != .untouched && configuration.side(for: $0) == configuration.side(for: bundle) }
         guard let current = ids.firstIndex(of: bundle), ids.indices.contains(current + direction) else { return }
-        var result = ids; result.swapAt(current, current + direction)
+        var result = applications.map(\.id)
+        guard let from = result.firstIndex(of: bundle), let to = result.firstIndex(of: ids[current + direction]) else { return }
+        result.swapAt(from, to)
         update { $0.order = result }
     }
 
@@ -172,22 +235,25 @@ final class AppModel: ObservableObject {
         let permission = AXIsProcessTrusted()
         if trusted != permission {
             trusted = permission
-            if !permission { releaseVisibility(); items = [] }
+            if !permission { releaseVisibility(); items = []; systemItems = [] }
         }
         guard trusted, !scanning else { return }
         scanning = true
         let apps = NSWorkspace.shared.runningApplications
         worker.async { [weak self] in
             let found = MenuAccessibility.scan(apps)
+            let systemItems = MenuAccessibility.systemItems(apps)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.scanning = false
                 guard self.trusted else { return }
+                self.systemItems = systemItems
                 let running = Set(apps.map(\.processIdentifier))
                 let ids = Set(found.map(\.id))
                 self.items = found + self.items.filter { running.contains($0.pid) && !ids.contains($0.id) && self.configuration.disposition(for: $0.bundle) != .untouched }
                 self.refreshImages()
                 self.applyVisibility()
+                self.reconcilePinnedOrder()
             }
         }
     }
@@ -217,13 +283,13 @@ final class AppModel: ObservableObject {
         requestedImageIDs = ids
         // Hidden icons keep their last genuine glyph. Sampling them by revealing native items
         // would reflow Bar and the unmodified icons to its right.
-        let visible = items.filter { lease == nil || configuration.disposition(for: $0.bundle) == .untouched }
+        let visible = items.filter { lease == nil || [.untouched, .pinned].contains(configuration.disposition(for: $0.bundle)) }
         capturingImages = true
         imageTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 self.initialCaptureComplete = true; self.capturingImages = false; self.imageTask = nil
-                self.imagesCapturedAt = Date(); self.applyVisibility(); self.imagesDidRefresh?()
+                self.imagesCapturedAt = Date(); self.applyVisibility(); self.imagesDidRefresh?(); self.reconcilePinnedOrder()
             }
             do {
                 var candidates = visible
@@ -251,7 +317,10 @@ final class AppModel: ObservableObject {
 
     func setPaused(_ value: Bool) {
         paused = value
-        if value { releaseVisibility() } else {
+        if value {
+            orderingTask?.cancel(); imageTask?.cancel(); NativePlacement.releaseInput()
+            checkedOrder = ""; releaseVisibility()
+        } else {
             engineFailed = false; initialCaptureComplete = false; safeNativeBundles = []
             refreshImages(force: true)
         }
@@ -292,6 +361,7 @@ final class AppModel: ObservableObject {
                 }
                 let old = self.lease; self.lease = newLease; self.acknowledgedAllowed = allowed; old?.invalidate()
                 self.presentationChanged?()
+                self.reconcilePinnedOrder()
             }
         }
     }
@@ -365,8 +435,9 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         stopping = true
+        NativePlacement.releaseInput()
         if let appearanceObserver { DistributedNotificationCenter.default().removeObserver(appearanceObserver) }
-        imageTask?.cancel(); imageTask = nil
+        imageTask?.cancel(); imageTask = nil; orderingTask?.cancel()
         scanTimer?.invalidate(); scanTimer = nil
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observers = []

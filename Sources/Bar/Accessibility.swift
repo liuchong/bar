@@ -12,6 +12,11 @@ struct MenuItem: Identifiable {
     let pid: pid_t
 }
 
+struct SystemMenuItem: Identifiable, Sendable {
+    let id: String
+    let label: String
+}
+
 enum MenuAccessibility {
     static func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var result: CFTypeRef?
@@ -62,6 +67,33 @@ enum MenuAccessibility {
             }
         }
         return items
+    }
+    /// System controls use a separate accessibility tree and are informational only.
+    static func systemItems(_ apps: [NSRunningApplication]) -> [SystemMenuItem] {
+        guard let agent = apps.first(where: { $0.bundleIdentifier == "com.apple.MenuBarAgent" }) else { return [] }
+        let root = AXUIElementCreateApplication(agent.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.08)
+        var pending = [root], visited: [AXUIElement] = [], result: [String: String] = [:]
+        for _ in 0..<4 {
+            var next: [AXUIElement] = []
+            for element in pending.prefix(128) where visited.count < 128 {
+                guard !visited.contains(where: { CFEqual($0, element) }) else { continue }
+                visited.append(element)
+                AXUIElementSetMessagingTimeout(element, 0.08)
+                let id = text(element, kAXIdentifierAttribute)
+                if id.hasPrefix("com.apple.menuextra.") {
+                    let label = text(element, kAXDescriptionAttribute).components(separatedBy: .newlines).first ?? ""
+                    result[id] = label.isEmpty ? id : label
+                } else {
+                    next += children(element)
+                    next += value(element, kAXWindowsAttribute) as? [AXUIElement] ?? []
+                }
+            }
+            pending = next
+            if pending.isEmpty || visited.count >= 128 { break }
+        }
+        return result.map { SystemMenuItem(id: $0.key, label: $0.value) }
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
     }
     static func press(_ item: MenuItem, right: Bool) -> AXError {
         AXUIElementSetMessagingTimeout(item.element, 0.15)

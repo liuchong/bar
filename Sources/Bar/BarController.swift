@@ -134,13 +134,18 @@ final class BarController: NSObject, NSWindowDelegate {
                 } else { groups.append((placement.frame, [ordered[placement.index]])) }
             }
         } else {
-            var row: [DrawerEntry] = [], width: CGFloat = 0, y = anchor.minY - height
+            // The button can be shorter than the system bar (especially on a camera display).
+            // Start below the full menu-bar region, rather than below the button's inset bounds.
+            let menuBarBottom = min(screen.frame.maxY - height, screen.visibleFrame.maxY)
+            var row: [DrawerEntry] = [], width: CGFloat = 0
             let maximum = screen.frame.width - 16
             func appendRow() {
                 guard !row.isEmpty else { return }
-                let x = max(screen.frame.minX + 8, min(anchor.maxX - width, screen.frame.maxX - width - 8))
-                groups.append((CGRect(x: x, y: y, width: width, height: height), row))
-                y -= height; row = []; width = 0
+                let frame = DrawerLayout.belowRow(width: width, screen: screen.frame, anchor: anchor,
+                    menuBarBottom: menuBarBottom, height: height, row: groups.count,
+                    backingScale: screen.backingScaleFactor)
+                groups.append((frame, row))
+                row = []; width = 0
             }
             for item in model.drawerEntries {
                 let next = item.width

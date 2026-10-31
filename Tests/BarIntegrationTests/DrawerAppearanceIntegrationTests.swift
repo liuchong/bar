@@ -6,6 +6,25 @@ import BarCore
 
 @Suite("Drawer presentation")
 struct DrawerAppearanceIntegrationTests {
+    @Test func lowerStripClearsFullMenuBarEvenWhenItsButtonIsShorter() {
+        for screen in [CGRect(x: 0, y: 0, width: 1440, height: 900),
+                       CGRect(x: -1920, y: -400, width: 1920, height: 1080)] {
+            let bar = CGRect(x: screen.minX, y: screen.maxY - 38, width: screen.width, height: 38)
+            let button = CGRect(x: screen.maxX - 300, y: screen.maxY - 28, width: 24, height: 22)
+            for scale in [CGFloat(1), CGFloat(2)] {
+                let row = DrawerLayout.belowRow(width: 160, screen: screen, anchor: button,
+                    menuBarBottom: bar.minY, height: 38, row: 0, backingScale: scale)
+                #expect(row.maxY == bar.minY - 1 / scale)
+                #expect(!row.intersects(bar))
+                #expect(row.maxX == button.maxX)
+                let next = DrawerLayout.belowRow(width: 160, screen: screen, anchor: button,
+                    menuBarBottom: bar.minY, height: 38, row: 1, backingScale: scale)
+                #expect(next.maxY == row.minY)
+                #expect(!next.intersects(row))
+            }
+        }
+    }
+
     @Test @MainActor func wallpaperTintInWhiteGlyphEdgesDoesNotTurnItIntoAColoredIcon() throws {
         let width = 24, height = 24
         var bytes = [UInt8](repeating: 255, count: width * height * 4)

@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--diagnose") {
             let result: [String: Any] = ["system": ProcessInfo.processInfo.operatingSystemVersionString,
                 "visibilityService": BARVisibilityLease.isAvailable(), "accessibility": AXIsProcessTrusted(),
-                "bundle": Bundle.main.bundleIdentifier ?? "unbundled"]
+                "bundle": Bundle.main.bundleIdentifier ?? "unbundled", "menuBarImages": MenuBarImages.authorized]
             if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
                 print(String(decoding: data, as: UTF8.self))
             }
@@ -22,15 +22,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSRunningApplication.runningApplications(withBundleIdentifier: own).contains(where: {
             $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }) { NSApp.terminate(nil); return }
+        NSApp.applicationIconImage = Brand.applicationIcon
         NSApp.setActivationPolicy(.accessory)
         let model = AppModel()
         controller = BarController(model: model)
         model.start()
-        if !model.trusted || CommandLine.arguments.contains("--settings") { controller?.showSettings() }
+        if !model.trusted || !model.imageAccess || CommandLine.arguments.contains("--settings") { controller?.showSettings() }
     }
     func applicationWillTerminate(_ notification: Notification) { controller?.shutdown() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        controller?.showSettings(); return true
+        if let controller, !controller.model.trusted || !controller.model.imageAccess ||
+            (!flag && !controller.model.expanded && !controller.model.menuIsActive) {
+            controller.showSettings()
+        }
+        return true
     }
 }
 

@@ -44,12 +44,13 @@ struct ExpansionTests {
                                "app.hidden": .hidden, "app.collected": .collected, "app.offline": .hidden]
         let running: Set<String> = ["com.apple.controlcenter", "bar.host", "app.hidden", "app.collected", "app.new"]
         let allow = VisibilityPolicy.allowed(running: running, configuration: config,
-            expanded: true, temporary: "app.hidden", host: "bar.host")
-        #expect(allow?.isSuperset(of: ["com.apple.controlcenter", "bar.host", "app.collected", "app.new"]) == true)
+            temporary: "app.hidden", host: "bar.host")
+        #expect(allow?.isSuperset(of: ["com.apple.controlcenter", "bar.host", "app.new"]) == true)
         #expect(allow?.contains("app.hidden") == false)
+        #expect(allow?.contains("app.collected") == false)
         config.dispositions = ["app.offline": .hidden]
         #expect(VisibilityPolicy.allowed(running: running, configuration: config,
-            expanded: false, temporary: nil, host: "bar.host") == nil)
+            temporary: nil, host: "bar.host") == nil)
     }
 
     @Test func invalidDelayAndDuplicateOrderAreNormalized() {

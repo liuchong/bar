@@ -57,10 +57,10 @@ public struct Configuration: Codable, Equatable, Sendable {
 public enum VisibilityPolicy {
     /// Restrictions operate on application identities; system controls and the host always survive.
     public static func allowed(running: Set<String>, configuration: Configuration,
-                               expanded: Bool, temporary: String?, host: String) -> Set<String>? {
+                               temporary: String?, host: String) -> Set<String>? {
         let denied = Set(configuration.dispositions.compactMap { bundle, mode -> String? in
             guard running.contains(bundle), bundle != host, !bundle.hasPrefix("com.apple.") else { return nil }
-            return mode == .hidden || (mode == .collected && !expanded && bundle != temporary) ? bundle : nil
+            return mode == .hidden || (mode == .collected && bundle != temporary) ? bundle : nil
         })
         guard !denied.isEmpty else { return nil }
         return running.subtracting(denied).union([host, "com.apple.MenuBarAgent",

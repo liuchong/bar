@@ -223,20 +223,20 @@ struct SettingsView: View {
                 Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 5) {
+            HStack(spacing: 8) {
                 Picker("\(app.name) 分区", selection: Binding(get: { model.configuration.placement(for: app.id) }, set: {
                     model.setPlacement(app.id, $0)
                 })) {
                     ForEach(ItemPlacement.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().pickerStyle(.segmented).frame(width: 185)
+                }.labelsHidden().pickerStyle(.menu).frame(width: 90)
                 Picker("\(app.name) 显示状态", selection: Binding(get: { model.configuration.display(for: app.id) }, set: {
                     model.setItemDisplay(app.id, $0)
                 })) {
                     ForEach(ItemDisplay.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().pickerStyle(.segmented).frame(width: 130)
+                }.labelsHidden().pickerStyle(.menu).frame(width: 75)
                     .disabled(model.configuration.placement(for: app.id) == .ignored)
             }.disabled(!rulesEnabled)
-            VStack(spacing: 8) {
+            HStack(spacing: 8) {
                 Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
                     .help("向前移动").accessibilityLabel("\(app.name) 向前移动")
                     .disabled(!rulesEnabled || !model.canMove(app.id, direction: -1))

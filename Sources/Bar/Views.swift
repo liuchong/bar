@@ -149,6 +149,10 @@ struct SettingsView: View {
                 Button { model.scan(); model.refreshImages(force: true) } label: { Image(systemName: "arrow.clockwise") }
                     .help("刷新图标").disabled(model.capturingImages)
             }.padding(16)
+            if let message = model.message ?? model.imageMessage {
+                Text(message).font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
+            }
             List {
                 ForEach(model.applications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }, id: \.id) { app in
                     HStack(spacing: 10) {

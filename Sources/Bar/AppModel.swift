@@ -9,7 +9,7 @@ final class AppModel: ObservableObject {
     @Published var configuration: Configuration
     @Published var items: [MenuItem] = []
     @Published var menuImages: [String: MenuBarImage] = [:]
-    @Published var imageAccess = MenuBarImages.authorized
+    @Published var imageAccess = false
     @Published var capturingImages = false
     @Published var imageMessage: String?
     var imagesDidRefresh: (() -> Void)?
@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     var presentationChanged: (() -> Void)?
     var beforeOpeningItem: (() -> Void)?
+    private let imageAuthorization: @MainActor () -> Bool
     private let store: ConfigurationStore
     private let worker = DispatchQueue(label: "bar.accessibility", qos: .userInitiated)
     private let actionWorker = DispatchQueue(label: "bar.menu-actions", qos: .userInitiated)
@@ -52,7 +53,9 @@ final class AppModel: ObservableObject {
     var menuIsActive: Bool { menuItem != nil }
     var visibilitySettled: Bool { initialCaptureComplete && acknowledgedAllowed == lastAllowed }
 
-    init(store: ConfigurationStore? = nil) {
+    init(store: ConfigurationStore? = nil, imageAuthorization: @escaping @MainActor () -> Bool = { MenuBarImages.authorized }) {
+        self.imageAuthorization = imageAuthorization
+        self.imageAccess = imageAuthorization()
         let location = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Bar/settings.json")
         self.store = store ?? ConfigurationStore(url: location)
@@ -127,7 +130,7 @@ final class AppModel: ObservableObject {
         dispositionRequests[bundle] = request
         // Read a newly collected item while it is still visible. Never reveal hidden items to refresh.
         let visible = items.filter { $0.bundle == bundle && configuration.disposition(for: bundle) == .untouched }
-        guard mode == .collected, imageAccess, !visible.isEmpty else {
+        guard mode == .collected, !visible.isEmpty else {
             update { $0.dispositions[bundle] = mode }; return
         }
         Task { [weak self] in
@@ -135,7 +138,7 @@ final class AppModel: ObservableObject {
             let safe = await NativePlacement.arrange(visible, anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
             self.safeNativeBundles.formUnion(safe)
             let fresh = await self.freshItems(bundle)
-            if let captured = try? await MenuBarImages.capture(fresh) {
+            if self.imageAccess, let captured = try? await MenuBarImages.capture(fresh) {
                 for (id, image) in captured { self.menuImages[id] = image }
             }
             guard !self.stopping, self.dispositionRequests[bundle] == request else { return }
@@ -184,16 +187,17 @@ final class AppModel: ObservableObject {
 
     func requestImageAccess() {
         MenuBarImages.requestAccess()
-        imageAccess = MenuBarImages.authorized
+        imageAccess = imageAuthorization()
         refreshImages(force: true)
     }
 
     func refreshImages(force: Bool = false) {
-        imageAccess = MenuBarImages.authorized
+        imageAccess = imageAuthorization()
         guard !stopping, trusted, !menuIsActive, imageTask == nil else { return }
         if !imageAccess {
-            if collected.isEmpty { initialCaptureComplete = true }
-            return
+            imageMessage = "收纳和隐藏可正常使用。尚未允许屏幕录制，抽屉暂用占位符；允许后才能显示原菜单栏图像。"
+            // Image permission affects glyphs only. Native placement and visibility must still initialize.
+            if initialCaptureComplete { return }
         }
         let ids = Set(items.map(\.id))
         guard force || !initialCaptureComplete || ids != requestedImageIDs || Date().timeIntervalSince(imagesCapturedAt) > 60 else { return }
@@ -217,6 +221,7 @@ final class AppModel: ObservableObject {
                     candidates = []
                     for bundle in Set(visible.map(\.bundle)).sorted() { candidates += await self.freshItems(bundle) }
                 }
+                guard self.imageAccess else { return }
                 let captured = try await MenuBarImages.capture(candidates)
                 if Task.isCancelled { return }
                 for (id, image) in captured { self.menuImages[id] = image }

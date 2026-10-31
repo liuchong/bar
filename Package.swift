@@ -11,7 +11,7 @@ let package = Package(
                 linkerSettings: [.linkedFramework("Foundation")]),
         .executableTarget(name: "Bar", dependencies: ["BarCore", "BarNative"],
                           swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "BarIntegrationTests", dependencies: ["BarCore"]),
+        .testTarget(name: "BarIntegrationTests", dependencies: ["BarCore", "Bar"]),
         .testTarget(name: "BarCoreTests", dependencies: ["BarCore"])
     ]
 )

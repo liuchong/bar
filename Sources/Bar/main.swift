@@ -31,8 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) { controller?.shutdown() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let controller, !controller.model.trusted || !controller.model.imageAccess ||
-            (!flag && !controller.model.expanded && !controller.model.menuIsActive) {
+        if let controller, !flag && !controller.model.expanded && !controller.model.menuIsActive {
             controller.showSettings()
         }
         return true

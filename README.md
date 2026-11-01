@@ -15,7 +15,8 @@
 <p align="center">
   <a href="docs/usage.md">使用指南</a> ·
   <a href="docs/system-icons.md">系统图标</a> ·
-  <a href="docs/development.md">构建与开发</a>
+  <a href="docs/development.md">构建与开发</a> ·
+  <a href="LICENSE">1PL 1.0</a>
 </p>
 
 ## 功能
@@ -60,3 +61,7 @@ open -a Bar
 | [构建与开发](docs/development.md) | 签名安装、代码结构、实现方式、测试与验证范围。 |
 
 Bar 使用当前 macOS 的私有菜单栏接口，系统更新可能影响显隐与排序行为。接口不可用或位置整理失败时，会保留原生显示；具体限制见[系统图标说明](docs/system-icons.md#当前边界)。
+
+## 许可证
+
+Bar 的软件及相关文档采用 **One Public License（1PL）1.0**。完整条款见 [LICENSE](LICENSE)，许可证官方页面见 [License.pub](https://license.pub/1pl/)。

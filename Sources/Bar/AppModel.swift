@@ -600,7 +600,8 @@ final class AppModel: ObservableObject {
 
     func setExpanded(_ value: Bool) {
         guard expanded != value else { return }
-        expanded = value; applyVisibility()
+        // Drawer presentation must never start or release a native visibility lease.
+        expanded = value
     }
 
     func setPaused(_ value: Bool) {

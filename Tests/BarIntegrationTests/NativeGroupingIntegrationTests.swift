@@ -128,6 +128,12 @@ struct NativeGroupingIntegrationTests {
         #expect(model.drawerEntries.isEmpty) // Request sent; old acknowledgement still allows it.
         model.acknowledgeVisibility(allowed: [], systemItems: system)
         #expect(model.drawerEntries.compactMap(\.item).map(\.id) == [id])
+        model.setExpanded(true)
+        #expect(model.expanded)
+        #expect(model.drawerEntries.compactMap(\.item).map(\.id) == [id])
+        model.setExpanded(false)
+        #expect(!model.expanded)
+        #expect(model.drawerEntries.compactMap(\.item).map(\.id) == [id])
         model.beginVisibilityRequest(allowed: [id], systemItems: system)
         #expect(model.drawerEntries.isEmpty) // Hide the copy before the original is restored.
         model.releaseVisibility()

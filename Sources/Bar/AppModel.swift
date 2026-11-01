@@ -317,6 +317,7 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             defer {
                 self.ruleTask = nil
+                if self.imageAccess && self.collected.allSatisfy({ self.menuImages[$0.id] != nil }) { self.imageMessage = nil }
                 self.applyVisibility(); self.presentationChanged?(); self.reconcilePinnedOrder()
             }
             // A picker/context-menu action must finish before sending any native drag events.
@@ -332,6 +333,13 @@ final class AppModel: ObservableObject {
                 guard self.configuration.disposition(for: id) == .collected else { self.preparing.remove(id); continue }
                 let request = self.dispositionRequests[id] ?? 0
                 let visible = await self.freshItems(id)
+                if self.safeNativeBundles.contains(id), let anchor = self.nativeBarAnchor?(),
+                   StableMenuBar.canReveal(originals: visible.map(\.frame), anchor: anchor,
+                    displays: NSScreen.screens.compactMap { screen in
+                        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDisplayBounds($0.uint32Value) }
+                    }), !self.imageAccess || visible.allSatisfy({ self.menuImages[$0.id] != nil }) {
+                    self.unplaced.remove(id); self.preparing.remove(id); continue
+                }
                 let safe = await NativePlacement.arrange(visible, anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
                 if Task.isCancelled { return }
                 let fresh = await self.freshItems(id)
@@ -341,9 +349,12 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 guard request == (self.dispositionRequests[id] ?? 0) else { continue }
                 self.safeNativeBundles.formUnion(safe)
-                if !visible.isEmpty && !safe.contains(id) {
+                let missingImages = self.imageAccess && fresh.contains { self.menuImages[$0.id] == nil }
+                if visible.isEmpty || !safe.contains(id) || missingImages {
                     self.unplaced.insert(id)
-                    self.message = "部分图标尚未完成位置整理，暂时保持原生显示。关闭菜单后可点击刷新重试。"
+                    self.message = missingImages
+                        ? "部分图标图像尚未读取，暂时保持原生显示。可点击刷新图标重试。"
+                        : "部分图标尚未完成位置整理，暂时保持原生显示。关闭菜单后可点击刷新重试。"
                 } else { self.unplaced.remove(id) }
                 self.preparing.remove(id)
             }
@@ -391,6 +402,15 @@ final class AppModel: ObservableObject {
                 guard self.trusted else { return }
                 let running = Set(apps.map(\.processIdentifier))
                 let discovered = found + systemItems
+                let previous = Dictionary(self.items.map { ($0.id, $0.pid) }, uniquingKeysWith: { a, _ in a })
+                let newlyCollected = discovered.filter {
+                    previous[$0.id] != $0.pid && self.configuration.disposition(for: $0.bundle) == .collected
+                }
+                let newBundles = Set(newlyCollected.map(\.bundle))
+                self.safeNativeBundles.subtract(newBundles)
+                self.preparing.formUnion(newBundles)
+                for bundle in newBundles { self.dispositionRequests[bundle, default: 0] += 1 }
+                for item in newlyCollected { self.menuImages.removeValue(forKey: item.id) }
                 let ids = Set(discovered.map(\.id))
                 self.items = discovered + self.items.filter { running.contains($0.pid) && !ids.contains($0.id) && self.configuration.disposition(for: $0.bundle) != .untouched }
                 self.systemItems = self.items.filter { SystemItemPolicy.isSystem($0.bundle) }
@@ -447,6 +467,8 @@ final class AppModel: ObservableObject {
                     let safe = await NativePlacement.arrange(self.collected,
                         anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
                     self.safeNativeBundles.formUnion(safe)
+                    self.unplaced.subtract(safe)
+                    self.unplaced.formUnion(Set(self.collected.map(\.bundle)).subtracting(safe))
                     candidates = []
                     for bundle in Set(visible.map(\.bundle)).sorted() { candidates += await self.freshItems(bundle) }
                 }
@@ -479,8 +501,13 @@ final class AppModel: ObservableObject {
 
     func applyVisibility() {
         guard !stopping, initialCaptureComplete, trusted, engineAvailable, !paused, !engineFailed else { releaseVisibility(); return }
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let pending = preparing.union(unplaced)
+        let apps = NSWorkspace.shared.runningApplications
+        var processes: [String: Set<Int32>] = [:], discovered: [String: Set<Int32>] = [:]
+        for app in apps { if let id = app.bundleIdentifier { processes[id, default: []].insert(app.processIdentifier) } }
+        for item in items { discovered[item.bundle, default: []].insert(item.pid) }
+        let running = Set(processes.keys)
+        let missing = VisibilityPolicy.awaitingDiscovery(running: processes, discovered: discovered, configuration: configuration)
+        let pending = preparing.union(unplaced).union(missing)
         let temporary = pending.union(temporaryBundle.map { [$0] } ?? [])
         let systemAllowed = SystemItemPolicy.allowed(configuration: configuration, temporary: temporary)
         let applicationAllowed = VisibilityPolicy.allowed(running: running, configuration: configuration,

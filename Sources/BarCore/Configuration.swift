@@ -115,6 +115,16 @@ public struct Configuration: Codable, Equatable, Sendable {
 }
 
 public enum VisibilityPolicy {
+    /// A saved collection rule must not hide a newly launched process before
+    /// its status items have been discovered and prepared by the host.
+    public static func awaitingDiscovery(running: [String: Set<Int32>], discovered: [String: Set<Int32>],
+                                         configuration: Configuration) -> Set<String> {
+        Set(running.compactMap { bundle, processes in
+            guard configuration.disposition(for: bundle) == .collected,
+                  !(discovered[bundle] ?? []).isSuperset(of: processes) else { return nil }
+            return bundle
+        })
+    }
     /// Restrictions operate on application identities; system controls and the host always survive.
     public static func allowed(running: Set<String>, configuration: Configuration,
                                temporary: String?, host: String, preparing: Set<String> = []) -> Set<String>? {

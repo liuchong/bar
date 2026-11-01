@@ -72,7 +72,7 @@ final class DrawerSurfaceView: NSView {
         // Mask only the material: glyphs and their hit regions stay fully opaque.
         // Adjacent columns share a straight join, without a faded seam in the middle.
         let width = bounds.width, height = bounds.height
-        let radius = min(5, width / 2, height / 2)
+        let radius = min(10, width / 2, height / 2)
         let feather: CGFloat = min(1.5, width / 4, height / 4)
         let leftRadius = leftEdge ? radius : 0, rightRadius = rightEdge ? radius : 0
         let path = CGMutablePath()

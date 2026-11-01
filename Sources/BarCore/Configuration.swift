@@ -3,7 +3,7 @@ import Foundation
 public enum ItemDisposition: String, Codable, CaseIterable, Sendable {
     case untouched, collected, pinned, hidden
     public var title: String {
-        switch self { case .untouched: "忽略"; case .collected: "隐藏"; case .pinned: "显示"; case .hidden: "隐藏" }
+        switch self { case .untouched: "忽略"; case .collected: "收纳到抽屉"; case .pinned: "菜单栏常显"; case .hidden: "收纳到抽屉" }
     }
 }
 
@@ -19,7 +19,7 @@ public enum ItemPlacement: String, Codable, CaseIterable, Sendable {
 
 public enum ItemDisplay: String, CaseIterable, Sendable {
     case shown, hidden
-    public var title: String { self == .shown ? "显示" : "隐藏" }
+    public var title: String { self == .shown ? "菜单栏常显" : "收纳到抽屉" }
 }
 
 public enum ExpansionStyle: String, Codable, CaseIterable, Sendable {

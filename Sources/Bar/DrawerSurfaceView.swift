@@ -1,5 +1,12 @@
 import AppKit
 import BarCore
+import SwiftUI
+
+/// The drawer intentionally does not activate Bar. Its first click must still
+/// reach a glyph button when another application owns keyboard focus.
+final class DrawerHostingView: NSHostingView<DrawerView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
 
 struct DrawerEntry: Identifiable {
     let item: MenuItem?

@@ -13,8 +13,12 @@ enum NativePointer {
         var point: CGPoint
         var delta = CGPoint.zero
         var monitors: [Any] = []
-        init(origin: CGPoint, source: CGPoint, display: CGDirectDisplayID) {
+        let command: Bool
+        let right: Bool
+        var pressed = false
+        init(origin: CGPoint, source: CGPoint, display: CGDirectDisplayID, command: Bool, right: Bool) {
             self.origin = origin; self.point = source; self.display = display
+            self.command = command; self.right = right
         }
     }
     private static var session: Session?
@@ -22,7 +26,7 @@ enum NativePointer {
     static func cancel() {
         guard let current = session else { return }
         session = nil
-        post(.leftMouseUp, at: current.point, command: true)
+        if current.pressed { post(current.right ? .rightMouseUp : .leftMouseUp, at: current.point, command: current.command) }
         for monitor in current.monitors { NSEvent.removeMonitor(monitor) }
         let destination = CGPoint(x: current.origin.x + current.delta.x, y: current.origin.y + current.delta.y)
         CGWarpMouseCursorPosition(destination)
@@ -32,11 +36,11 @@ enum NativePointer {
         Logger(subsystem: "com.liuchong.bar", category: "Ordering").notice("Pointer restored; error=\(hypot(restored.x - destination.x, restored.y - destination.y))")
     }
 
-    static func drag(from source: CGPoint, to destination: CGPoint) async -> Bool {
+    private static func begin(at source: CGPoint, command: Bool, right: Bool = false) async -> Session? {
         // Bounded idle wait, including mouse movement inside our settings window.
         var previous = CGEvent(source: nil)?.location, stable = 0
         for _ in 0..<100 {
-            guard !Task.isCancelled else { return false }
+            guard !Task.isCancelled else { return nil }
             let now = CGEvent(source: nil)?.location
             let idle = now == previous && NSEvent.pressedMouseButtons == 0 &&
                 NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
@@ -46,13 +50,13 @@ enum NativePointer {
             try? await Task.sleep(for: .milliseconds(50))
         }
         guard stable >= 7, !Task.isCancelled, session == nil,
-              let origin = CGEvent(source: nil)?.location else { return false }
+              let origin = CGEvent(source: nil)?.location else { return nil }
         let display = CGMainDisplayID()
-        guard CGDisplayHideCursor(display) == .success else { return false }
+        guard CGDisplayHideCursor(display) == .success else { return nil }
         guard CGAssociateMouseAndMouseCursorPosition(0) == .success else {
-            CGDisplayShowCursor(display); return false
+            CGDisplayShowCursor(display); return nil
         }
-        let current = Session(origin: origin, source: source, display: display)
+        let current = Session(origin: origin, source: source, display: display, command: command, right: right)
         session = current
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
             .otherMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
@@ -66,10 +70,28 @@ enum NativePointer {
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { event in receive(event); return event }) {
             current.monitors.append(monitor)
         }
+        return current
+    }
+
+    static func click(at point: CGPoint, right: Bool) async -> Bool {
+        guard let current = await begin(at: point, command: false, right: right) else { return false }
+        defer { if session === current { cancel() } }
+        post(.mouseMoved, at: point, command: false)
+        try? await Task.sleep(for: .milliseconds(30))
+        guard session === current, !Task.isCancelled else { return false }
+        current.pressed = true
+        post(right ? .rightMouseDown : .leftMouseDown, at: point, command: false)
+        try? await Task.sleep(for: .milliseconds(20))
+        return session === current && !Task.isCancelled
+    }
+
+    static func drag(from source: CGPoint, to destination: CGPoint) async -> Bool {
+        guard let current = await begin(at: source, command: true) else { return false }
         defer { if session === current { cancel() } }
         post(.mouseMoved, at: source, command: false)
         try? await Task.sleep(for: .milliseconds(30))
         guard session === current, !Task.isCancelled else { return false }
+        current.pressed = true
         post(.leftMouseDown, at: source, command: true)
         for step in 1...8 {
             guard session === current, !Task.isCancelled else { return false }
@@ -87,7 +109,7 @@ enum NativePointer {
         source?.localEventsSuppressionInterval = 0
         source?.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitLocalKeyboardEvents,
             .permitSystemDefinedEvents], state: .eventSuppressionStateRemoteMouseDrag)
-        if type == .leftMouseDown || type == .leftMouseUp {
+        if command && (type == .leftMouseDown || type == .leftMouseUp) {
             let key = CGEvent(keyboardEventSource: source, virtualKey: 55, keyDown: type == .leftMouseDown)
             key?.flags = type == .leftMouseDown ? .maskCommand : []
             key?.setIntegerValueField(.eventSourceUserData, value: tag)
@@ -100,7 +122,8 @@ enum NativePointer {
                 return
             }
         }
-        let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        let button: CGMouseButton = type == .rightMouseDown || type == .rightMouseUp ? .right : .left
+        let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button)
         event?.flags = command ? .maskCommand : []
         event?.setIntegerValueField(.mouseEventClickState, value: 1)
         event?.setIntegerValueField(.eventSourceUserData, value: tag)

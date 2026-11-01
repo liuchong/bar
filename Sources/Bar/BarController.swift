@@ -212,10 +212,10 @@ final class BarController: NSObject, NSWindowDelegate {
             panel.appearance = dark.map { NSAppearance(named: $0 ? .darkAqua : .aqua)! } ?? button.effectiveAppearance
             panel.setFrame(group.frame, display: true)
             let root = DrawerView(model: model, items: group.items, height: height)
-            if let hosting = background.hosting as? NSHostingView<DrawerView> {
+            if let hosting = background.hosting as? DrawerHostingView {
                 hosting.rootView = root; hosting.frame = background.bounds
             } else {
-                let hosting = NSHostingView(rootView: root)
+                let hosting = DrawerHostingView(rootView: root)
                 hosting.frame = background.bounds; hosting.autoresizingMask = [.width, .height]
                 background.hosting = hosting; background.addSubview(hosting)
             }

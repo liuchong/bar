@@ -3,6 +3,7 @@ import BarCore
 import BarNative
 import Combine
 import ServiceManagement
+import OSLog
 
 struct NativeOrderingPlan {
     let left: [MenuItem]
@@ -66,9 +67,10 @@ final class AppModel: ObservableObject {
     private var scanTimer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var menuItem: MenuItem?
+    private var openingTask: Task<Void, Never>?
+    private var menuPresentation: MenuPresentation?
     private var menuStarted = Date.distantPast
     private var menuSeen = false
-    private var checkingMenu = false
     private var engineFailed = false
     private var checkingExternalMenu = false
     private(set) var externalMenuOpen = false
@@ -248,8 +250,10 @@ final class AppModel: ObservableObject {
         do { try store.save(next) }
         catch { message = "无法保存设置：\(error.localizedDescription)"; return }
         if let orderingTask { orderingTask.cancel(); NativePlacement.releaseInput() }
+        if openingTask != nil { openingTask?.cancel(); NativePointer.cancel() }
         checkedOrder = ""
         configuration = next
+        if menuIsActive { finishMenu() }
         orderRevision += 1
         engineFailed = false
         applyVisibility()
@@ -464,6 +468,7 @@ final class AppModel: ObservableObject {
     func setPaused(_ value: Bool) {
         paused = value
         if value {
+            openingTask?.cancel(); finishMenu()
             orderingTask?.cancel(); imageTask?.cancel(); ruleTask?.cancel(); NativePlacement.releaseInput()
             checkedOrder = ""; releaseVisibility()
         } else {
@@ -520,41 +525,108 @@ final class AppModel: ObservableObject {
     }
 
     func open(_ item: MenuItem, right: Bool = false) {
-        guard trusted, !menuIsActive, !capturingImages, !preparingRules else { return }
-        guard safeNativeBundles.contains(item.bundle) else {
-            message = "该图标的原生位置尚未整理到 Bar 左侧。请暂停管理，将它拖到 Bar 左侧后恢复管理，以避免打开菜单时移动右侧图标。"
-            return
-        }
-        beforeOpeningItem?()
-        temporaryBundle = item.bundle
-        menuItem = item; menuStarted = Date(); menuSeen = false
-        applyVisibility()
-        // The original is verified to be left of Bar; revealing it cannot insert anything into the fixed right band.
-        actionWorker.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            let error = MenuAccessibility.press(item, right: right)
-            DispatchQueue.main.async {
-                if error != .success && error != .cannotComplete {
-                    self?.message = "无法打开 \(item.appName) 的图标（\(error.rawValue)），请刷新后重试。"
-                    self?.finishMenu()
+        guard trusted, !paused, !stopping, openingTask == nil else { return }
+        if menuIsActive { finishMenu() }
+        openingTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.openingTask = nil }
+            for _ in 0..<80 {
+                if !self.capturingImages && !self.preparingRules && !self.orderingItems { break }
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled else { return }
+            guard !self.capturingImages, !self.preparingRules, !self.orderingItems,
+                  self.safeNativeBundles.contains(item.bundle) else {
+                self.message = "\(item.appName) 尚未完成位置整理，暂时保留原生显示。请点击刷新图标后重试。"
+                self.unplaced.insert(item.bundle)
+                return
+            }
+            self.beforeOpeningItem?()
+            self.menuItem = item; self.menuSeen = false
+            self.temporaryBundle = item.bundle
+            self.applyVisibility()
+            for _ in 0..<80 {
+                if self.visibilitySettled || Task.isCancelled { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled else { return }
+            guard self.visibilitySettled, let fresh = await self.freshItems(item.bundle).first(where: { $0.id == item.id }),
+                  self.canOpenOriginal(fresh) else {
+                self.message = "\(item.appName) 的原生图标尚未恢复到安全位置，请刷新图标后重试。"
+                self.finishMenu(); return
+            }
+            self.menuItem = fresh; self.menuStarted = Date()
+            guard !Task.isCancelled else { return }
+            let pids = self.presentationPIDs(fresh)
+            let baseline = MenuPresentation(pids: pids)
+            let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            self.menuPresentation = baseline
+            let error: AXError = await withCheckedContinuation { continuation in
+                self.actionWorker.async { continuation.resume(returning: MenuAccessibility.press(fresh, right: right)) }
+            }
+            guard !Task.isCancelled else { return }
+            var responded = await self.waitForPresentation(fresh, baseline: baseline, foreground: foreground)
+            if !responded, !Task.isCancelled {
+                // Some status items report AX success without dispatching their mouse action.
+                // Use the now-visible, freshly located original, preserving the user's pointer.
+                if let original = await self.freshItems(item.bundle).first(where: { $0.id == item.id }),
+                   !Task.isCancelled, self.canOpenOriginal(original) {
+                    let clicked = await NativePointer.click(at: CGPoint(x: original.frame.midX, y: original.frame.midY), right: right)
+                    if clicked { responded = await self.waitForPresentation(original, baseline: baseline, foreground: foreground) }
                 }
+            }
+            guard !Task.isCancelled else { return }
+            Logger(subsystem: "com.liuchong.bar", category: "MenuAction").notice("Menu action AX=\(error.rawValue) responded=\(responded)")
+            if responded { self.menuSeen = true }
+            else {
+                self.message = "未能打开 \(item.appName) 的菜单。请点击刷新图标后重试。"
+                self.finishMenu()
             }
         }
     }
 
-    func pollMenu(pointerInBar: Bool) {
-        guard let item = menuItem, !checkingMenu else { return }
-        checkingMenu = true
-        actionWorker.async { [weak self] in
-            let open = MenuAccessibility.hasOpenMenu(item)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.checkingMenu = false
-                guard self.menuItem?.id == item.id else { return }
-                self.menuSeen = self.menuSeen || open
-                if !open && (self.menuSeen || (Date().timeIntervalSince(self.menuStarted) > 2 && !pointerInBar)) {
-                    self.finishMenu()
-                }
+    private func presentationPIDs(_ item: MenuItem) -> Set<pid_t> {
+        var result: Set<pid_t> = [item.pid]
+        result.formUnion(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").map(\.processIdentifier))
+        if SystemItemPolicy.isSystem(item.bundle) {
+            result.formUnion(NSWorkspace.shared.runningApplications.filter {
+                MenuAccessibility.systemHosts.contains($0.bundleIdentifier ?? "")
+            }.map(\.processIdentifier))
+        }
+        return result
+    }
+
+    private func canOpenOriginal(_ item: MenuItem) -> Bool {
+        guard let anchor = nativeBarAnchor?() else { return false }
+        return StableMenuBar.canReveal(originals: [item.frame], anchor: anchor,
+            displays: NSScreen.screens.compactMap { screen in
+                (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDisplayBounds($0.uint32Value) }
+            })
+    }
+
+    private func waitForPresentation(_ item: MenuItem, baseline: MenuPresentation, foreground: pid_t?) async -> Bool {
+        for _ in 0..<6 {
+            guard !Task.isCancelled else { return false }
+            let open: Bool = await withCheckedContinuation { continuation in
+                actionWorker.async { continuation.resume(returning: MenuAccessibility.hasOpenMenu(item)) }
             }
+            if open || MenuPresentation(pids: presentationPIDs(item)).hasNewPresentation(comparedTo: baseline) { return true }
+            if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != foreground,
+               front.processIdentifier == item.pid || item.bundle.hasPrefix((front.bundleIdentifier ?? "") + ".") { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    func pollMenu(pointerInBar: Bool) {
+        guard let item = menuItem, openingTask == nil else { return }
+        // A normal application window completes a click; only a transient menu
+        // or popover keeps its original icon temporarily visible.
+        let presented = menuPresentation.map { MenuPresentation(pids: presentationPIDs(item)).hasNewTransientPresentation(comparedTo: $0) } == true
+        menuSeen = menuSeen || presented
+        if !presented && (menuSeen || (Date().timeIntervalSince(menuStarted) > 2 && !pointerInBar)) {
+            finishMenu()
         }
     }
 
@@ -571,7 +643,7 @@ final class AppModel: ObservableObject {
     }
 
     private func finishMenu() {
-        menuItem = nil; temporaryBundle = nil
+        menuItem = nil; temporaryBundle = nil; menuPresentation = nil
         applyVisibility(); presentationChanged?()
     }
 
@@ -584,6 +656,7 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         stopping = true
+        openingTask?.cancel()
         NativePlacement.releaseInput()
         if let appearanceObserver { DistributedNotificationCenter.default().removeObserver(appearanceObserver) }
         imageTask?.cancel(); imageTask = nil; orderingTask?.cancel(); ruleTask?.cancel()

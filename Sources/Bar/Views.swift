@@ -29,8 +29,8 @@ struct DrawerView: View {
                         Button("打开菜单") { model.open(item, right: true) }
                         Divider()
                         Button("忽略") { MenuSelection.commit { model.setPlacement(item.bundle, .ignored) } }
-                        Button("隐藏") { MenuSelection.commit { model.setItemDisplay(item.bundle, .hidden) } }
-                        Button("显示") { MenuSelection.commit { model.setItemDisplay(item.bundle, .shown) } }
+                        Button("收纳到抽屉") { MenuSelection.commit { model.setItemDisplay(item.bundle, .hidden) } }
+                        Button("菜单栏常显") { MenuSelection.commit { model.setItemDisplay(item.bundle, .shown) } }
                         ForEach(ItemSide.allCases, id: \.self) { side in
                             Button("移到" + side.title) { MenuSelection.commit { model.setSide(item.bundle, side) } }
                         }
@@ -82,10 +82,11 @@ struct DrawerDrop: DropDelegate {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var search = ""
+    @State private var selectedPage = 0
     var body: some View {
-        TabView {
-            general.tabItem { Label("通用", systemImage: "gearshape") }
-            icons.tabItem { Label("图标", systemImage: "menubar.rectangle") }
+        TabView(selection: $selectedPage) {
+            general.tabItem { Label("通用", systemImage: "gearshape") }.tag(0)
+            icons.tabItem { Label("图标", systemImage: "menubar.rectangle") }.tag(1)
         }
         .padding(.top, 8)
         .frame(minWidth: 650, minHeight: 550)
@@ -107,32 +108,10 @@ struct SettingsView: View {
                 Toggle("暂停图标管理", isOn: Binding(get: { model.paused }, set: model.setPaused))
                     .help("临时恢复全部图标的原生显示；分区、显示状态和排序规则保留，解除暂停后恢复。")
             }
-            Section("收纳抽屉") {
-                Text("只控制已收纳图标的抽屉；图标页设为“显示”的项目始终留在菜单栏，不随抽屉收起。")
+            Section("图标与抽屉") {
+                Text("在“图标”页选择每项常显或收纳，并设置左、右抽屉如何展开。")
                     .font(.callout).foregroundStyle(.secondary)
-                Picker("左栏抽屉方向", selection: Binding(get: { model.configuration.style }, set: { value in
-                    model.update { $0.style = value }
-                })) {
-                    ForEach(ExpansionStyle.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                Text("右栏抽屉固定在下方展开，避开右侧原生常显图标。")
-                    .font(.callout).foregroundStyle(.secondary)
-                ForEach(ItemSide.allCases, id: \.self) { side in
-                    Picker(side.title + "抽屉展开方式", selection: Binding(get: { model.configuration.behavior(for: side) }, set: { value in
-                        model.update { $0.columnBehaviors[side.rawValue] = value }
-                    })) {
-                        ForEach(ExpansionBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                }
-                Text(behaviorDescription).font(.callout).foregroundStyle(.secondary)
-                if ItemSide.allCases.contains(where: { model.configuration.behavior(for: $0) == .automatic }) {
-                    delaySlider("靠近后展开", value: model.configuration.hoverDelay, range: 0.1...2) { value in
-                        model.update { $0.hoverDelay = value }
-                    }
-                    delaySlider("离开后收起", value: model.configuration.hideDelay, range: 0.3...10) { value in
-                        model.update { $0.hideDelay = value }
-                    }
-                }
+                Button("管理图标与抽屉…") { selectedPage = 1 }
             }
             Section("系统权限") {
                 HStack {
@@ -175,7 +154,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
             }
             HStack {
-                Text("显示：菜单栏常显；隐藏：收进对应栏；忽略：原生显示并统一放在右侧。").font(.caption).foregroundStyle(.secondary)
+                Text("常显留在菜单栏；收纳放进抽屉。点击 Bar 展开抽屉，再点图标打开菜单。").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("重新整理菜单栏顺序") { model.retryPinnedOrder() }
                     .disabled(model.orderingItems || model.items.isEmpty)
@@ -185,8 +164,19 @@ struct SettingsView: View {
             List {
                 ForEach(ItemSide.allCases, id: \.self) { side in
                     Section(side.title) {
+                        drawerSettings(side)
                         ForEach(filteredApplications.filter { !SystemItemPolicy.isSystem($0.id) && model.configuration.placement(for: $0.id) == (side == .left ? .left : .right) }, id: \.id) { app in
                             applicationRow(app)
+                        }
+                    }
+                }
+                if ItemSide.allCases.contains(where: { model.configuration.behavior(for: $0) == .automatic }) {
+                    Section("悬停延时 · 两栏共用") {
+                        delaySlider("靠近后展开", value: model.configuration.hoverDelay, range: 0.1...2) { value in
+                            model.update { $0.hoverDelay = value }
+                        }
+                        delaySlider("离开后收起", value: model.configuration.hideDelay, range: 0.3...10) { value in
+                            model.update { $0.hideDelay = value }
                         }
                     }
                 }
@@ -212,7 +202,7 @@ struct SettingsView: View {
                     }
                 }
             }.listStyle(.inset)
-            Text("左右栏独立排序。Bar 右侧依次为右栏常显、忽略项目及系统固定入口；忽略项目保留组内相对顺序。所有选择都会保存。")
+            Text("左右栏独立排序。忽略项由系统显示，统一在 Bar 右侧。未检测到图标的应用保留规则，图标出现后自动应用。")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
     }
@@ -220,23 +210,35 @@ struct SettingsView: View {
         model.applications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }
     }
     private func applicationRow(_ app: (id: String, name: String, icon: NSImage?, count: Int), rulesEnabled: Bool = true) -> some View {
-        HStack(spacing: 10) {
-            Image(nsImage: app.icon ?? NSWorkspace.shared.icon(for: .application))
-                .resizable().scaledToFit().frame(width: 24, height: 24)
-                .help(app.icon == nil ? "未找到已安装的应用，管理规则仍保留。" : app.name)
+        let collected = model.collected.first { $0.bundle == app.id }
+        return HStack(spacing: 10) {
+            Group {
+                if let collected {
+                    Button { model.open(collected) } label: {
+                        Image(nsImage: app.icon ?? NSWorkspace.shared.icon(for: .application)).resizable().scaledToFit()
+                    }.buttonStyle(.plain).help("打开 \(app.name) 的菜单")
+                        .accessibilityLabel("打开 \(app.name) 的菜单")
+                } else {
+                    Image(nsImage: app.icon ?? NSWorkspace.shared.icon(for: .application)).resizable().scaledToFit()
+                        .help(app.icon == nil ? "未找到已安装的应用，管理规则仍保留。" : app.name)
+                }
+            }.frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).lineLimit(1)
-                Text(app.count == 0 ? (app.icon == nil ? "未找到应用，规则已保留" : "当前未运行") : "\(app.count) 个菜单栏图标")
+                Text(app.count == 0 ? (app.icon == nil ? "未找到应用，规则已保留" : "等待菜单栏图标出现 · 规则已保存") : "\(app.count) 个菜单栏图标")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 SettingsMenuPicker(title: "\(app.name) 分区", choices: ItemPlacement.allCases.map { ($0, $0.title) },
                     selection: model.configuration.placement(for: app.id), onChange: { model.setPlacement(app.id, $0) })
                     .frame(width: 90)
-                SettingsMenuPicker(title: "\(app.name) 显示状态", choices: ItemDisplay.allCases.map { ($0, $0.title) },
-                    selection: model.configuration.display(for: app.id), onChange: { model.setItemDisplay(app.id, $0) })
-                    .frame(width: 75)
-                    .disabled(model.configuration.placement(for: app.id) == .ignored)
+                if model.configuration.placement(for: app.id) == .ignored {
+                    Text("系统原样").font(.callout).foregroundStyle(.secondary).frame(width: 120)
+                } else {
+                    SettingsMenuPicker(title: "\(app.name) 图标去向", choices: ItemDisplay.allCases.map { ($0, $0.title) },
+                        selection: model.configuration.display(for: app.id), onChange: { model.setItemDisplay(app.id, $0) })
+                        .frame(width: 120)
+                }
             }.disabled(!rulesEnabled)
             HStack(spacing: 8) {
                 Button { model.move(app.id, direction: -1) } label: { Image(systemName: "chevron.up") }
@@ -248,15 +250,30 @@ struct SettingsView: View {
             }.buttonStyle(.borderless)
         }.padding(.vertical, 6).accessibilityElement(children: .contain)
     }
-    private var behaviorDescription: String {
-        if model.configuration.behavior(for: .left) != model.configuration.behavior(for: .right) {
-            return "两栏抽屉分别展开和收起。点击 Bar 切换可收起的抽屉，右键也可以单独控制某一栏；设为“抽屉保持展开”的栏目保持可见。"
-        }
-        return switch model.configuration.behavior(for: .left) {
-        case .manual: "点击菜单栏的 Bar 图标展开，再点一次收起。"
-        case .automatic: "鼠标靠近后展开，离开后延时收起。操作菜单时保持展开，也可以点击切换。"
-        case .always: "收纳的图标一直展开。切换显隐方式后可以收起。"
-        }
+    private func drawerSettings(_ side: ItemSide) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("抽屉开合")
+                Spacer()
+                SettingsMenuPicker(title: side.title + "抽屉开合", choices: ExpansionBehavior.allCases.map { ($0, $0.title) },
+                    selection: model.configuration.behavior(for: side), onChange: { value in
+                        model.update { $0.columnBehaviors[side.rawValue] = value }
+                    }).frame(width: 210)
+            }
+            HStack {
+                Text("展开位置")
+                Spacer()
+                if side == .left {
+                    SettingsMenuPicker(title: "左栏抽屉位置", choices: ExpansionStyle.allCases.map { ($0, $0.title) },
+                        selection: model.configuration.style, onChange: { value in model.update { $0.style = value } })
+                        .frame(width: 210)
+                } else {
+                    Text("菜单栏下方").foregroundStyle(.secondary)
+                }
+            }
+            Text("只控制本栏“收纳到抽屉”的图标，“菜单栏常显”不随抽屉收起。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(.vertical, 6)
     }
     private func delaySlider(_ title: String, value: Double, range: ClosedRange<Double>, set: @escaping (Double) -> Void) -> some View {
         HStack {

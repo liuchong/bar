@@ -187,15 +187,15 @@ struct SettingsView: View {
                         Text("\(Int((model.configuration.drawerBackgroundDensity * 100).rounded()))%")
                             .monospacedDigit().foregroundStyle(.secondary)
                     }
-                    Slider(value: Binding(get: { model.configuration.drawerBackgroundDensity },
-                        set: model.setDrawerBackgroundDensity), in: 0...1)
-                        .accessibilityLabel("下方抽屉背景浓度")
+                    DensitySlider(value: model.configuration.drawerBackgroundDensity,
+                        onChange: model.setDrawerBackgroundDensity)
+                        .frame(height: 30)
                     HStack {
-                        Text("完全透明"); Spacer(); Text("液态玻璃"); Spacer(); Text("纯色")
+                        Text("透明"); Spacer(); Text("模糊"); Spacer(); Text("实色")
                     }.font(.caption).foregroundStyle(.secondary)
                     DrawerBackgroundPreview(density: model.configuration.drawerBackgroundDensity)
                         .frame(height: 60).accessibilityHidden(true)
-                    Text("默认 65%。中段保留背景颜色并实时模糊，接近右端才逐渐变为纯色。仅作用于下方抽屉，向左展开保持原样。")
+                    Text("默认 65%。中段保留背景颜色并实时模糊，接近右端才逐渐变为实色。仅作用于下方抽屉，向左展开保持原样。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("忽略") {

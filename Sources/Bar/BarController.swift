@@ -338,7 +338,7 @@ final class BarController: NSObject, NSWindowDelegate {
             let item = add(value.title, to: styles, action: #selector(styleAction(_:)))
             item.tag = index; item.state = style == value ? .on : .off
         }
-        let position = NSMenuItem(title: "展开位置", action: nil, keyEquivalent: ""); position.image = Brand.symbol("menubar.rectangle"); position.submenu = styles; menu.addItem(position)
+        let position = NSMenuItem(title: "左栏抽屉方向", action: nil, keyEquivalent: ""); position.image = Brand.symbol("menubar.rectangle"); position.submenu = styles; menu.addItem(position)
         add(model.paused ? "恢复管理" : "暂停管理（恢复全部图标）", to: menu, action: #selector(pauseAction))
         menu.addItem(.separator())
         add("退出 Bar", to: menu, action: #selector(quitAction))

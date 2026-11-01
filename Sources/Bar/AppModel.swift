@@ -4,6 +4,13 @@ import BarNative
 import Combine
 import ServiceManagement
 
+struct NativeOrderingPlan {
+    let left: [MenuItem]
+    let right: [MenuItem]
+    let preservedIDs: Set<String>
+    var items: [MenuItem] { left + right }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var configuration: Configuration
@@ -17,7 +24,7 @@ final class AppModel: ObservableObject {
     var nativeBarAnchor: (() -> CGRect?)?
     private var safeNativeBundles = Set<String>()
     private var applicationMetadata: [String: ApplicationMetadata] = [:]
-    private var resolvedApplicationIDs = Set<String>()
+    private var applicationMetadataAttempts: [String: Date] = [:]
     private var temporaryBundle: String?
     private var imageTask: Task<Void, Never>?
     private var imagesCapturedAt = Date.distantPast
@@ -117,22 +124,60 @@ final class AppModel: ObservableObject {
         update { $0.sides[bundle] = side }
     }
 
+    func nativeOrderingPlan(anchor: CGRect) -> NativeOrderingPlan {
+        let ignored = items.filter {
+            $0.bundle != host && configuration.disposition(for: $0.bundle) == .untouched &&
+            $0.frame.width > 1 && $0.frame.height > 1 &&
+            abs($0.frame.midY - anchor.midY) < max($0.frame.height, anchor.height)
+        }.sorted { $0.frame.minX == $1.frame.minX ? $0.id < $1.id : $0.frame.minX < $1.frame.minX }
+        return NativeOrderingPlan(left: pinned.filter { configuration.side(for: $0.bundle) == .left },
+            right: pinned.filter { configuration.side(for: $0.bundle) == .right } + ignored,
+            preservedIDs: Set(ignored.map(\.id)))
+    }
+
     func reconcilePinnedOrder() {
-        guard !stopping, !paused, trusted, visibilitySettled, !capturingImages, !menuIsActive, !preparingRules, orderingTask == nil else { return }
-        let signature = String(orderRevision) + pinned.map { "\($0.id):\($0.pid):\(configuration.side(for: $0.bundle).rawValue):\($0.frame.minX)" }.joined(separator: "|")
+        guard !stopping, !paused, trusted, visibilitySettled, !capturingImages, !menuIsActive,
+              ownMenusTracking == 0, NSEvent.pressedMouseButtons == 0,
+              !preparingRules, orderingTask == nil, let anchor = nativeBarAnchor?() else { return }
+        let plan = nativeOrderingPlan(anchor: anchor), revision = orderRevision
+        let selected = plan.items
+        let signature = "\(orderRevision):\(anchor.minX):\(anchor.maxX)" + selected.map {
+            "\($0.id):\($0.pid):\(configuration.disposition(for: $0.bundle).rawValue):\(configuration.side(for: $0.bundle).rawValue):\($0.frame.minX)"
+        }.joined(separator: "|")
         guard signature != checkedOrder else { return }
         checkedOrder = signature
-        let configuration = configuration, selected = pinned, revision = orderRevision
         orderingVerified = false
         orderingTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.orderingTask = nil }
-            var failures = Set<String>()
-            for side in ItemSide.allCases {
-                let group = selected.filter { configuration.side(for: $0.bundle) == side }
-                let failed = await NativePlacement.order(group, side: side, anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
-                failures.formUnion(failed)
+            defer { self.orderingTask = nil; self.scheduleRulePreparation() }
+            let boundary = plan.right
+            if boundary.contains(where: { $0.frame.minX < anchor.maxX - 1 }) {
+                let collecting = Set(self.collected.map(\.bundle))
+                self.preparing.formUnion(collecting)
+                self.safeNativeBundles.subtract(collecting)
+                self.applyVisibility()
+                for _ in 0..<100 {
+                    if self.visibilitySettled || Task.isCancelled { break }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                guard !Task.isCancelled, self.visibilitySettled else { return }
+                let moved = await NativePlacement.moveEntry(before: Set(boundary.map(\.bundle)),
+                    anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
+                guard !Task.isCancelled else { return }
+                self.checkedOrder = moved ? "" : signature
+                self.orderingMessage = moved ? nil : "Bar 入口尚未移动到忽略项目左侧。请关闭菜单后点击“重新整理菜单栏顺序”重试。"
+                self.presentationChanged?()
+                if collecting.isEmpty && moved {
+                    DispatchQueue.main.async { self.reconcilePinnedOrder() }
+                }
+                return
             }
+            var failures = Set<String>()
+            failures.formUnion(await NativePlacement.order(plan.left, side: .left,
+                anchor: { self.nativeBarAnchor?() }, scan: self.freshItems))
+            guard !Task.isCancelled else { return }
+            failures.formUnion(await NativePlacement.order(plan.right, side: .right, preservedIDs: plan.preservedIDs,
+                anchor: { self.nativeBarAnchor?() }, scan: self.freshItems))
             guard !Task.isCancelled else { return }
             var refreshed: [MenuItem] = []
             for bundle in Set(selected.map(\.bundle)) { refreshed += await self.freshItems(bundle) }
@@ -144,7 +189,8 @@ final class AppModel: ObservableObject {
                 return
             }
             self.orderingVerified = failures.isEmpty && !selected.isEmpty
-            self.orderingMessage = failures.isEmpty ? nil : "部分常显图标未能完成原生排序。请让图标在菜单栏可见、关闭菜单后点击“重新整理常显顺序”。"
+            let failedNames = Set(selected.filter { failures.contains($0.bundle) }.map(\.appName)).sorted().joined(separator: "、")
+            self.orderingMessage = failures.isEmpty ? nil : "尚未整理：\(failedNames)。请关闭菜单后点击“重新整理菜单栏顺序”重试；忽略及系统固定入口不被拖动。"
             self.presentationChanged?()
         }
     }
@@ -161,13 +207,21 @@ final class AppModel: ObservableObject {
             .map { id in
                 let entries = grouped[id] ?? []
                 let system = SystemItemPolicy.isSystem(id)
-                if !system && entries.isEmpty && resolvedApplicationIDs.insert(id).inserted {
+                if !system && entries.isEmpty && applicationMetadata[id] == nil &&
+                    Date().timeIntervalSince(applicationMetadataAttempts[id] ?? .distantPast) >= 30 {
+                    applicationMetadataAttempts[id] = Date()
                     applicationMetadata[id] = ApplicationMetadata.resolve(id)
                 }
                 let metadata = applicationMetadata[id]
                 return (id, entries.first?.appName ?? metadata?.name ?? (system ? SystemItemPolicy.title(id) : id),
                     entries.first?.icon ?? metadata?.icon ?? (system ? NSImage(systemSymbolName: SystemItemPolicy.symbol(id), accessibilityDescription: nil) : nil), entries.count)
             }
+    }
+
+    var systemApplications: [(id: String, name: String, icon: NSImage?, count: Int)] {
+        let system = applications.filter { SystemItemPolicy.isSystem($0.id) }
+        return system.filter { SystemItemPolicy.isManageable($0.id) } +
+            system.filter { !SystemItemPolicy.isManageable($0.id) }
     }
 
     func start() {
@@ -207,9 +261,10 @@ final class AppModel: ObservableObject {
     private func freshItems(_ bundle: String) async -> [MenuItem] {
         let system = SystemItemPolicy.isSystem(bundle)
         let apps = NSWorkspace.shared.runningApplications.filter { system || $0.bundleIdentifier == bundle }
+        let inputSourceNames = system ? InputSourceMenu.names() : []
         return await withCheckedContinuation { continuation in
             worker.async {
-                let found = system ? MenuAccessibility.systemItems(apps).filter { $0.bundle == bundle } : MenuAccessibility.scan(apps)
+                let found = system ? MenuAccessibility.systemItems(apps, inputSourceNames: inputSourceNames).filter { $0.bundle == bundle } : MenuAccessibility.scan(apps)
                 continuation.resume(returning: found)
             }
         }
@@ -322,9 +377,10 @@ final class AppModel: ObservableObject {
         guard trusted, !scanning else { return }
         scanning = true
         let apps = NSWorkspace.shared.runningApplications
+        let inputSourceNames = InputSourceMenu.names()
         worker.async { [weak self] in
             let found = MenuAccessibility.scan(apps)
-            let systemItems = MenuAccessibility.systemItems(apps)
+            let systemItems = MenuAccessibility.systemItems(apps, inputSourceNames: inputSourceNames)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.scanning = false
@@ -343,7 +399,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshManagedItems() {
-        applicationMetadata.removeAll(); resolvedApplicationIDs.removeAll()
+        applicationMetadata.removeAll(); applicationMetadataAttempts.removeAll()
         preparing.formUnion(unplaced); unplaced.removeAll()
         scan(); refreshImages(force: true); scheduleRulePreparation()
     }
@@ -362,7 +418,7 @@ final class AppModel: ObservableObject {
         if !previouslyAuthorized && imageAccess {
             initialCaptureComplete = false; safeNativeBundles = []; releaseVisibility()
         }
-        guard !stopping, trusted, !menuIsActive, imageTask == nil, ruleTask == nil else { return }
+        guard !stopping, trusted, !menuIsActive, imageTask == nil, ruleTask == nil, orderingTask == nil else { return }
         if !imageAccess {
             imageMessage = "收纳和隐藏可正常使用。尚未允许屏幕录制，展开后可点击“允许图标图像…”完成授权，再显示原菜单栏图标。"
             // Image permission affects glyphs only. Native placement and visibility must still initialize.

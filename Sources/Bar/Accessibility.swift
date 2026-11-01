@@ -14,6 +14,10 @@ struct MenuItem: Identifiable {
 }
 
 enum MenuAccessibility {
+    // These hosts expose the same controls through AXExtrasMenuBar and the
+    // system-item tree. Only the latter has individual, persistent identities.
+    static let systemHosts: Set<String> = ["com.apple.MenuBarAgent", "com.apple.TextInputMenuAgent",
+        "com.apple.controlcenter", "com.apple.systemuiserver"]
     static func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var result: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success else { return nil }
@@ -47,7 +51,7 @@ enum MenuAccessibility {
     static func scan(_ apps: [NSRunningApplication]) -> [MenuItem] {
         var items: [MenuItem] = []
         for app in apps where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            guard let bundle = app.bundleIdentifier else { continue }
+            guard let bundle = app.bundleIdentifier, !systemHosts.contains(bundle) else { continue }
             let root = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(root, 0.08)
             guard let raw = value(root, "AXExtrasMenuBar"), CFGetTypeID(raw) == AXUIElementGetTypeID() else { continue }
@@ -68,7 +72,14 @@ enum MenuAccessibility {
         return items
     }
     /// System controls have individual identities even though they share one owning process.
-    static func systemItems(_ apps: [NSRunningApplication]) -> [MenuItem] {
+    static func systemIdentifier(_ id: String, label: String, role: String, inputSourceNames: Set<String>) -> String? {
+        if SystemItemPolicy.isSystem(id) { return SystemItemPolicy.canonical(id) }
+        if [kAXButtonRole, kAXMenuBarItemRole].contains(role), !label.isEmpty, inputSourceNames.contains(label) {
+            return SystemItemPolicy.prefix + "textinput"
+        }
+        return nil
+    }
+    static func systemItems(_ apps: [NSRunningApplication], inputSourceNames: Set<String> = []) -> [MenuItem] {
         guard let agent = apps.first(where: { $0.bundleIdentifier == "com.apple.MenuBarAgent" }) else { return [] }
         let root = AXUIElementCreateApplication(agent.processIdentifier)
         AXUIElementSetMessagingTimeout(root, 0.08)
@@ -80,9 +91,10 @@ enum MenuAccessibility {
                 visited.append(element)
                 AXUIElementSetMessagingTimeout(element, 0.08)
                 let id = text(element, kAXIdentifierAttribute)
-                if id.hasPrefix("com.apple.menuextra.") {
-                    let label = text(element, kAXDescriptionAttribute).components(separatedBy: .newlines).first ?? ""
-                    let key = SystemItemPolicy.canonical(id)
+                let label = [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute].map {
+                    text(element, $0).components(separatedBy: .newlines).first ?? ""
+                }.first { !$0.isEmpty } ?? ""
+                if let key = systemIdentifier(id, label: label, role: text(element, kAXRoleAttribute), inputSourceNames: inputSourceNames) {
                     let knownTitle = SystemItemPolicy.title(key)
                     let title = knownTitle == key && !label.isEmpty ? label : knownTitle
                     result[key] = MenuItem(id: key, bundle: key, appName: title, label: label.isEmpty ? title : label,

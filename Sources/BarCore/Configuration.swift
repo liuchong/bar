@@ -30,7 +30,7 @@ public enum ExpansionStyle: String, Codable, CaseIterable, Sendable {
 public enum ExpansionBehavior: String, Codable, CaseIterable, Sendable {
     case manual, automatic, always
     public var title: String {
-        switch self { case .manual: "点击展开 / 收起"; case .automatic: "自动显隐"; case .always: "一直展开" }
+        switch self { case .manual: "点击展开 / 收起"; case .automatic: "悬停自动展开 / 收起"; case .always: "抽屉保持展开" }
     }
 }
 

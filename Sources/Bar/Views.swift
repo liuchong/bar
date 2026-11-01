@@ -105,15 +105,20 @@ struct SettingsView: View {
             Section {
                 Toggle("登录时启动 Bar", isOn: Binding(get: { model.launchAtLogin }, set: model.setLogin))
                 Toggle("暂停图标管理", isOn: Binding(get: { model.paused }, set: model.setPaused))
+                    .help("临时恢复全部图标的原生显示；分区、显示状态和排序规则保留，解除暂停后恢复。")
             }
-            Section("展开") {
-                Picker("位置", selection: Binding(get: { model.configuration.style }, set: { value in
+            Section("收纳抽屉") {
+                Text("只控制已收纳图标的抽屉；图标页设为“显示”的项目始终留在菜单栏，不随抽屉收起。")
+                    .font(.callout).foregroundStyle(.secondary)
+                Picker("左栏抽屉方向", selection: Binding(get: { model.configuration.style }, set: { value in
                     model.update { $0.style = value }
                 })) {
                     ForEach(ExpansionStyle.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
+                Text("右栏抽屉固定在下方展开，避开右侧原生常显图标。")
+                    .font(.callout).foregroundStyle(.secondary)
                 ForEach(ItemSide.allCases, id: \.self) { side in
-                    Picker(side.title + "显隐方式", selection: Binding(get: { model.configuration.behavior(for: side) }, set: { value in
+                    Picker(side.title + "抽屉展开方式", selection: Binding(get: { model.configuration.behavior(for: side) }, set: { value in
                         model.update { $0.columnBehaviors[side.rawValue] = value }
                     })) {
                         ForEach(ExpansionBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -170,12 +175,12 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
             }
             HStack {
-                Text("显示：菜单栏常显；隐藏：收进对应栏；忽略：保持原样。").font(.caption).foregroundStyle(.secondary)
+                Text("显示：菜单栏常显；隐藏：收进对应栏；忽略：原生显示并统一放在右侧。").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("重新整理常显顺序") { model.retryPinnedOrder() }
-                    .disabled(model.orderingItems || model.pinned.isEmpty)
+                Button("重新整理菜单栏顺序") { model.retryPinnedOrder() }
+                    .disabled(model.orderingItems || model.items.isEmpty)
             }.padding(.horizontal, 16).padding(.bottom, 8)
-            if model.orderingVerified { Text("常显位置与顺序已核对").font(.caption).foregroundStyle(.secondary) }
+            if model.orderingVerified { Text("菜单栏分区与顺序已核对").font(.caption).foregroundStyle(.secondary) }
             if let message = model.orderingMessage { Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16) }
             List {
                 ForEach(ItemSide.allCases, id: \.self) { side in
@@ -194,7 +199,7 @@ struct SettingsView: View {
                     Toggle("管理系统图标", isOn: Binding(get: { model.configuration.manageSystemIcons }, set: model.setSystemManagement))
                     Text(model.configuration.manageSystemIcons ? "系统图标按各自规则管理。时钟、控制中心等固定入口保持原样。" : "已停用系统图标管理；下方选择、分区和顺序会保留，重新开启后恢复。")
                         .font(.caption).foregroundStyle(.secondary)
-                    ForEach(filteredApplications.filter { SystemItemPolicy.isSystem($0.id) }, id: \.id) { app in
+                    ForEach(model.systemApplications.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }, id: \.id) { app in
                         if SystemItemPolicy.isManageable(app.id) {
                             applicationRow(app, rulesEnabled: model.configuration.manageSystemIcons)
                         } else {
@@ -207,7 +212,7 @@ struct SettingsView: View {
                     }
                 }
             }.listStyle(.inset)
-            Text("左右栏独立排序。隐藏项目随对应栏展开，右栏在下方展开以避开原生图标。忽略项目保持系统原状；所有选择都会保存。")
+            Text("左右栏独立排序。Bar 右侧依次为右栏常显、忽略项目及系统固定入口；忽略项目保留组内相对顺序。所有选择都会保存。")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
     }
@@ -221,7 +226,7 @@ struct SettingsView: View {
                 .help(app.icon == nil ? "未找到已安装的应用，管理规则仍保留。" : app.name)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).lineLimit(1)
-                Text(app.count == 0 ? "当前未运行" : "\(app.count) 个菜单栏图标")
+                Text(app.count == 0 ? (app.icon == nil ? "未找到应用，规则已保留" : "当前未运行") : "\(app.count) 个菜单栏图标")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
@@ -245,7 +250,7 @@ struct SettingsView: View {
     }
     private var behaviorDescription: String {
         if model.configuration.behavior(for: .left) != model.configuration.behavior(for: .right) {
-            return "两栏分别显隐。点击 Bar 切换可收起的栏目，右键也可以单独展开或收起某一栏；一直展开的栏目保持可见。"
+            return "两栏抽屉分别展开和收起。点击 Bar 切换可收起的抽屉，右键也可以单独控制某一栏；设为“抽屉保持展开”的栏目保持可见。"
         }
         return switch model.configuration.behavior(for: .left) {
         case .manual: "点击菜单栏的 Bar 图标展开，再点一次收起。"

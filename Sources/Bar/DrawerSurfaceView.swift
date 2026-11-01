@@ -60,7 +60,7 @@ final class DrawerSurfaceView: NSView {
                    leftEdge: Bool = true, rightEdge: Bool = true) {
         self.style = style; self.density = DrawerBackground.normalized(density)
         self.leftEdge = leftEdge; self.rightEdge = rightEdge
-        layer?.masksToBounds = style == .below
+        layer?.masksToBounds = true
         updateMaterial()
         updateEdges()
     }

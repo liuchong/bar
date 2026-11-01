@@ -141,55 +141,6 @@ enum NativePlacement {
         return Set(items.map(\.bundle))
     }
 
-    static func arrange(_ items: [MenuItem], anchor: @escaping () -> CGRect?,
-                        scan: @escaping (String) async -> [MenuItem]) async -> Set<String> {
-        for _ in 0..<100 {
-            if !arranging { break }
-            try? await Task.sleep(for: .milliseconds(50))
-            if Task.isCancelled { return [] }
-        }
-        guard !arranging else { return [] }
-        arranging = true
-        defer { arranging = false }
-        var safe = Set<String>()
-        let focus = SettingsFocus(owners: Set(items.map(\.bundle)))
-        var restoreFocus = false
-        defer { if restoreFocus { focus.restore() } }
-        for bundle in Set(items.map(\.bundle)).sorted() {
-            var entries = await scan(bundle)
-            var succeeded = true
-            let identifiers = entries.map(\.id)
-            for id in identifiers {
-                entries = await scan(bundle)
-                guard let item = entries.first(where: { $0.id == id }) else { succeeded = false; continue }
-                guard !Task.isCancelled, let bar = anchor() else { return safe }
-                let displays = displayFrames()
-                if StableMenuBar.canReveal(originals: [item.frame], anchor: bar, displays: displays) { continue }
-                let onScreen = displays.contains { $0.contains(item.frame) }
-                guard onScreen, item.frame.width > 1, item.frame.height > 1,
-                      displays.contains(where: { $0.contains(bar) }),
-                      abs(item.frame.midY - bar.midY) < max(item.frame.height, bar.height),
-                      CGPreflightPostEventAccess(), NSEvent.pressedMouseButtons == 0,
-                      NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
-                else { succeeded = false; continue }
-                let source = CGPoint(x: item.frame.midX, y: item.frame.midY)
-                let destination = CGPoint(x: bar.minX - 8, y: bar.midY)
-                guard await NativePointer.drag(from: source, to: destination) else { restoreFocus = false; succeeded = false; break }
-                restoreFocus = true
-                try? await Task.sleep(for: .milliseconds(180))
-                if Task.isCancelled { return safe }
-            }
-            entries = await scan(bundle)
-            if let bar = anchor(), succeeded, !entries.isEmpty,
-               StableMenuBar.canReveal(originals: entries.map(\.frame), anchor: bar, displays: displayFrames()) { safe.insert(bundle) }
-            else if let bar = anchor(), !Task.isCancelled {
-                let positions = entries.map { "\($0.frame.minX)-\($0.frame.maxX)" }.joined(separator: ",")
-                Logger(subsystem: "com.liuchong.bar", category: "Ordering").notice("Collection layout unavailable bar=\(bar.minX)-\(bar.maxX) entries=\(positions, privacy: .public)")
-            }
-        }
-        return safe
-    }
-
     private static func displayFrames() -> [CGRect] {
         NSScreen.screens.compactMap { screen in
             guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }

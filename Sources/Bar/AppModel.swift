@@ -10,6 +10,18 @@ struct NativeOrderingPlan {
     let right: [MenuItem]
     let preservedIDs: Set<String>
     var items: [MenuItem] { left + right }
+    func preservesOrder(of previous: NativeOrderingPlan) -> Bool {
+        func keys(_ items: [MenuItem]) -> [String] { items.map { "\($0.id):\($0.pid)" } }
+        func isSubsequence(_ current: [String], of old: [String]) -> Bool {
+            var rest = current[...]
+            for value in old where rest.first == value { rest = rest.dropFirst() }
+            return rest.isEmpty
+        }
+        return preservedIDs.isSubset(of: previous.preservedIDs) &&
+            isSubsequence(keys(left), of: keys(previous.left)) &&
+            isSubsequence(keys(right.filter { !preservedIDs.contains($0.id) }),
+                          of: keys(previous.right.filter { !previous.preservedIDs.contains($0.id) }))
+    }
     func signature(revision: Int) -> String {
         func key(_ item: MenuItem) -> String { "\(item.id):\(item.pid)" }
         let managedLeft = left.map(key).joined(separator: "|")
@@ -30,7 +42,7 @@ final class AppModel: ObservableObject {
     @Published var imageMessage: String?
     var imagesDidRefresh: (() -> Void)?
     var nativeBarAnchor: (() -> CGRect?)?
-    private var safeNativeBundles = Set<String>()
+    private var preparedBundles = Set<String>()
     private var applicationMetadata: [String: ApplicationMetadata] = [:]
     private var applicationMetadataAttempts: [String: Date] = [:]
     private var temporaryBundle: String?
@@ -121,6 +133,9 @@ final class AppModel: ObservableObject {
     }
 
     var pinned: [MenuItem] {
+        pinned(using: configuration)
+    }
+    private func pinned(using configuration: Configuration) -> [MenuItem] {
         let ranks = Dictionary(configuration.sorted(items.map(\.bundle)).enumerated().map { ($1, $0) }, uniquingKeysWith: min)
         return items.filter { configuration.disposition(for: $0.bundle) == .pinned }.sorted {
             let a = ranks[$0.bundle] ?? 0, b = ranks[$1.bundle] ?? 0
@@ -163,14 +178,16 @@ final class AppModel: ObservableObject {
         update { $0.sides[bundle] = side }
     }
 
-    func nativeOrderingPlan(anchor: CGRect) -> NativeOrderingPlan {
+    func nativeOrderingPlan(anchor: CGRect, using configuration: Configuration? = nil) -> NativeOrderingPlan {
+        let configuration = configuration ?? self.configuration
         let ignored = items.filter {
             $0.bundle != host && configuration.disposition(for: $0.bundle) == .untouched &&
             $0.frame.width > 1 && $0.frame.height > 1 &&
             abs($0.frame.midY - anchor.midY) < max($0.frame.height, anchor.height)
         }.sorted { $0.frame.minX == $1.frame.minX ? $0.id < $1.id : $0.frame.minX < $1.frame.minX }
-        return NativeOrderingPlan(left: pinned.filter { configuration.side(for: $0.bundle) == .left },
-            right: pinned.filter { configuration.side(for: $0.bundle) == .right } + ignored,
+        let pins = pinned(using: configuration)
+        return NativeOrderingPlan(left: pins.filter { configuration.side(for: $0.bundle) == .left },
+            right: pins.filter { configuration.side(for: $0.bundle) == .right } + ignored,
             preservedIDs: Set(ignored.map(\.id)))
     }
 
@@ -192,14 +209,6 @@ final class AppModel: ObservableObject {
             defer { self.orderingTask = nil; self.scheduleRulePreparation() }
             let boundary = plan.right
             if boundary.contains(where: { $0.frame.minX < anchor.maxX - 1 }) {
-                let collecting = Set(self.collected.map(\.bundle))
-                self.preparing.formUnion(collecting)
-                self.applyVisibility()
-                for _ in 0..<100 {
-                    if self.visibilitySettled || Task.isCancelled { break }
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                guard !Task.isCancelled, self.visibilitySettled else { return }
                 let moved = await NativePlacement.moveEntry(before: Set(boundary.map(\.bundle)),
                     anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
                 guard !Task.isCancelled else { return }
@@ -310,12 +319,19 @@ final class AppModel: ObservableObject {
         change(&next); next.normalize()
         do { try store.save(next) }
         catch { message = "无法保存设置：\(error.localizedDescription)"; return }
+        let anchor = nativeBarAnchor?()
+        let previousPlan = anchor.map { nativeOrderingPlan(anchor: $0) }
         if let orderingTask { orderingTask.cancel(); NativePlacement.releaseInput() }
         if openingTask != nil { openingTask?.cancel(); NativePointer.cancel() }
-        checkedOrder = ""
         configuration = next
         if menuIsActive { finishMenu() }
-        orderRevision += 1
+        if let anchor, let previousPlan, orderingTask == nil, orderingMessage == nil,
+           nativeOrderingPlan(anchor: anchor).preservesOrder(of: previousPlan),
+           checkedOrder == previousPlan.signature(revision: orderRevision) {
+            // Removing a native item or changing only drawer settings cannot
+            // invalidate the relative order of the remaining native icons.
+            checkedOrder = nativeOrderingPlan(anchor: anchor).signature(revision: orderRevision)
+        } else { orderRevision += 1; checkedOrder = "" }
         engineFailed = false
         applyVisibility()
         presentationChanged?()
@@ -407,8 +423,8 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, !self.paused else { return }
                 guard self.configuration.disposition(for: id) == .collected else { self.preparing.remove(id); continue }
                 let request = self.dispositionRequests[id] ?? 0
-                // Previously prepared collections stay hidden while Bar moves. Reveal
-                // one at a time so restoring a batch cannot overflow the native row.
+                // Reveal only this target for capture. Collection preparation never
+                // drags an original or restores unrelated collected items.
                 self.preparationBundle = id
                 self.applyVisibility()
                 for _ in 0..<80 {
@@ -427,29 +443,23 @@ final class AppModel: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(50))
                     visible = await self.freshItems(id)
                 }
-                if self.safeNativeBundles.contains(id), let anchor = self.nativeBarAnchor?(),
-                   StableMenuBar.canReveal(originals: visible.map(\.frame), anchor: anchor,
-                    displays: NSScreen.screens.compactMap { screen in
-                        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDisplayBounds($0.uint32Value) }
-                    }), !self.imageAccess || visible.allSatisfy({ self.menuImages[$0.id] != nil }) {
-                    self.unplaced.remove(id); self.preparing.remove(id); continue
-                }
-                let safe = await NativePlacement.arrange(visible, anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
-                if Task.isCancelled { return }
-                let fresh = await self.freshItems(id)
-                if self.imageAccess, let captured = try? await MenuBarImages.capture(fresh) {
+                let fresh = visible
+                let ready = !fresh.isEmpty && fresh.allSatisfy { self.canOpenOriginal($0) }
+                var imagesReady = !self.imageAccess
+                if self.imageAccess, let captured = try? await MenuBarImages.captureStable(fresh, refresh: self.freshItems) {
                     for (key, image) in captured { self.menuImages[key] = image }
+                    imagesReady = !fresh.isEmpty && fresh.allSatisfy { captured[$0.id] != nil }
                 }
                 guard !Task.isCancelled else { return }
                 guard request == (self.dispositionRequests[id] ?? 0) else { continue }
-                self.safeNativeBundles.formUnion(safe)
-                let missingImages = self.imageAccess && fresh.contains { self.menuImages[$0.id] == nil }
-                if visible.isEmpty || !safe.contains(id) || missingImages {
+                if ready { self.preparedBundles.insert(id) }
+                let missingImages = !imagesReady
+                if !ready || missingImages {
                     self.unplaced.insert(id)
                     let name = fresh.first?.appName ?? visible.first?.appName ?? self.items.first(where: { $0.bundle == id })?.appName ?? id
                     self.rulePreparationMessage = missingImages
                         ? "\(name) 的图标图像尚未读取，暂时只保留原生显示。可点击刷新图标重试。"
-                        : "\(name) 尚未完成位置整理，暂时只保留原生显示。关闭菜单后可点击刷新重试。"
+                        : "\(name) 尚未完成收纳准备，暂时只保留原生显示。关闭菜单后可点击刷新重试。"
                     self.message = self.rulePreparationMessage
                 } else { self.unplaced.remove(id) }
                 self.preparing.remove(id)
@@ -512,7 +522,7 @@ final class AppModel: ObservableObject {
                     previous[$0.id] != $0.pid && self.configuration.disposition(for: $0.bundle) == .collected
                 }
                 let newBundles = Set(newlyCollected.map(\.bundle))
-                self.safeNativeBundles.subtract(newBundles)
+                self.preparedBundles.subtract(newBundles)
                 self.preparing.formUnion(newBundles)
                 for bundle in newBundles { self.dispositionRequests[bundle, default: 0] += 1 }
                 for item in newlyCollected { self.menuImages.removeValue(forKey: item.id) }
@@ -542,7 +552,7 @@ final class AppModel: ObservableObject {
     func requestImageAccess() {
         MenuBarImages.requestAccess()
         if imageAuthorization() {
-            initialCaptureComplete = false; safeNativeBundles = []; releaseVisibility()
+            initialCaptureComplete = false; preparedBundles = []; releaseVisibility()
         }
         refreshImages(force: true)
     }
@@ -551,7 +561,7 @@ final class AppModel: ObservableObject {
         let previouslyAuthorized = imageAccess
         imageAccess = imageAuthorization()
         if !previouslyAuthorized && imageAccess {
-            initialCaptureComplete = false; safeNativeBundles = []; releaseVisibility()
+            initialCaptureComplete = false; preparedBundles = []; releaseVisibility()
         }
         guard !stopping, trusted, !menuIsActive, imageTask == nil, ruleTask == nil, orderingTask == nil else { return }
         if !imageAccess {
@@ -575,16 +585,11 @@ final class AppModel: ObservableObject {
             do {
                 var candidates = visible
                 if !self.initialCaptureComplete && !self.paused {
-                    let safe = await NativePlacement.arrange(self.collected,
-                        anchor: { self.nativeBarAnchor?() }, scan: self.freshItems)
-                    self.safeNativeBundles.formUnion(safe)
-                    self.unplaced.subtract(safe)
-                    self.unplaced.formUnion(Set(self.collected.map(\.bundle)).subtracting(safe))
                     candidates = []
                     for bundle in Set(visible.map(\.bundle)).sorted() { candidates += await self.freshItems(bundle) }
                 }
                 guard self.imageAccess else { return }
-                let captured = try await MenuBarImages.capture(candidates)
+                let captured = try await MenuBarImages.captureStable(candidates, refresh: self.freshItems)
                 if Task.isCancelled { return }
                 for (id, image) in captured { self.menuImages[id] = image }
                 self.imageMessage = self.collected.contains(where: { self.menuImages[$0.id] == nil })
@@ -605,7 +610,7 @@ final class AppModel: ObservableObject {
             orderingTask?.cancel(); imageTask?.cancel(); ruleTask?.cancel(); NativePlacement.releaseInput()
             checkedOrder = ""; releaseVisibility()
         } else {
-            engineFailed = false; initialCaptureComplete = false; safeNativeBundles = []
+            engineFailed = false; initialCaptureComplete = false; preparedBundles = []
             refreshImages(force: true)
         }
     }
@@ -618,7 +623,7 @@ final class AppModel: ObservableObject {
         for item in items { discovered[item.bundle, default: []].insert(item.pid) }
         let running = Set(processes.keys)
         let missing = VisibilityPolicy.awaitingDiscovery(running: processes, discovered: discovered, configuration: configuration)
-        let pending = Set(preparing.filter { !safeNativeBundles.contains($0) || $0 == preparationBundle })
+        let pending = Set(preparing.filter { !preparedBundles.contains($0) || $0 == preparationBundle })
             .union(unplaced).union(missing)
         let temporary = pending.union(temporaryBundle.map { [$0] } ?? [])
         let systemAllowed = SystemItemPolicy.allowed(configuration: configuration, temporary: temporary)
@@ -674,8 +679,8 @@ final class AppModel: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             guard !self.capturingImages, !self.preparingRules, !self.orderingItems,
-                  self.safeNativeBundles.contains(item.bundle) else {
-                self.message = "\(item.appName) 尚未完成位置整理，暂时保留原生显示。请点击刷新图标后重试。"
+                  self.preparedBundles.contains(item.bundle) else {
+                self.message = "\(item.appName) 尚未完成收纳准备，暂时保留原生显示。请点击刷新图标后重试。"
                 self.unplaced.insert(item.bundle)
                 return
             }
@@ -736,7 +741,7 @@ final class AppModel: ObservableObject {
 
     private func canOpenOriginal(_ item: MenuItem) -> Bool {
         guard let anchor = nativeBarAnchor?() else { return false }
-        return StableMenuBar.canReveal(originals: [item.frame], anchor: anchor,
+        return StableMenuBar.canInteract(originals: [item.frame], anchor: anchor,
             displays: NSScreen.screens.compactMap { screen in
                 (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDisplayBounds($0.uint32Value) }
             })

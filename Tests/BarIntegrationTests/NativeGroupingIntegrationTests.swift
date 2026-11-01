@@ -6,6 +6,31 @@ import BarCore
 
 @Suite("Managed bands and the native right boundary")
 struct NativeGroupingIntegrationTests {
+    @Test @MainActor func collectingAnIgnoredItemDoesNotInvalidateNativeOrder() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(store: ConfigurationStore(url: directory.appendingPathComponent("settings.json")), imageAuthorization: { false })
+        model.trusted = false
+        defer { model.shutdown() }
+        model.items = ["app.pin", "app.new"].enumerated().map { index, id in
+            MenuItem(id: id, bundle: id, appName: id, label: id, icon: NSImage(),
+                element: AXUIElementCreateApplication(10), frame: CGRect(x: 160 + index * 30, y: 0, width: 24, height: 24), pid: 10)
+        }
+        model.configuration.setPlacement(.right, for: "app.pin")
+        model.configuration.setDisplay(.shown, for: "app.pin")
+        let anchor = CGRect(x: 100, y: 0, width: 24, height: 24)
+        let before = model.nativeOrderingPlan(anchor: anchor)
+        model.setPlacement("app.new", .left)
+        let collected = model.nativeOrderingPlan(anchor: anchor)
+        #expect(collected.preservesOrder(of: before))
+        #expect(collected.right.map(\.id) == ["app.pin"])
+        model.configuration.style = .left
+        #expect(model.nativeOrderingPlan(anchor: anchor).preservesOrder(of: collected))
+        model.setItemDisplay("app.new", .shown)
+        #expect(!model.nativeOrderingPlan(anchor: anchor).preservesOrder(of: collected))
+        #expect(StableMenuBar.canInteract(originals: model.items.map(\.frame), anchor: anchor,
+            displays: [CGRect(x: 0, y: 0, width: 1440, height: 900)]))
+    }
     @Test @MainActor func overlappingSystemHitPaddingDoesNotTriggerUnnecessaryNativeDrags() async {
         let ids = ["com.apple.menuextra.wifi", "com.apple.menuextra.textinput"]
         let items = ids.enumerated().map { index, id in

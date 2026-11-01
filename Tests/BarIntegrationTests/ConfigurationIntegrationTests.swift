@@ -101,17 +101,17 @@ struct ConfigurationIntegrationTests {
         #expect(ordered == Array(ids.reversed()))
     }
 
-    @Test func nativeMenuCanOnlyTemporarilyRevealVerifiedLeftItems() throws {
+    @Test func nativeMenuCanTemporarilyRevealVisibleItemsOnEitherSide() throws {
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let anchor = CGRect(x: 1000, y: 0, width: 28, height: 32)
         var configuration = Configuration()
         configuration.dispositions = ["app.collect": .collected, "app.hide": .hidden]
         let running: Set<String> = ["app.collect", "app.hide", "app.keep"]
         for original in [CGRect(x: 968, y: 0, width: 30, height: 32), CGRect(x: 1040, y: 0, width: 30, height: 32)] {
-            let safe = StableMenuBar.canReveal(originals: [original], anchor: anchor, displays: [screen])
+            let safe = StableMenuBar.canInteract(originals: [original], anchor: anchor, displays: [screen])
             let allowed = try #require(VisibilityPolicy.allowed(running: running, configuration: configuration,
                 temporary: safe ? "app.collect" : nil, host: "bar.host"))
-            #expect(allowed.contains("app.collect") == (original.maxX <= anchor.minX))
+            #expect(allowed.contains("app.collect"))
             #expect(allowed.contains("app.keep"))
             #expect(!allowed.contains("app.hide"))
         }

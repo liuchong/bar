@@ -40,12 +40,14 @@ public enum DrawerLayout {
 }
 
 public enum StableMenuBar {
-    /// Revealing an original item is safe only when it is on the same row and before the fixed anchor.
-    public static func canReveal(originals: [CGRect], anchor: CGRect, displays: [CGRect]) -> Bool {
+    /// Opening a collected item does not require relocating it across Bar.
+    /// Only accept a complete, visible hit rectangle on the same display and row.
+    public static func canInteract(originals: [CGRect], anchor: CGRect, displays: [CGRect]) -> Bool {
         !originals.isEmpty && originals.allSatisfy { frame in
-            frame.width > 1 && frame.height > 1 && frame.maxX <= anchor.minX + 1 &&
+            frame.width > 1 && frame.height > 1 &&
             abs(frame.midY - anchor.midY) < max(frame.height, anchor.height) &&
-            displays.contains { $0.contains(frame) }
+            !anchor.contains(CGPoint(x: frame.midX, y: frame.midY)) &&
+            displays.contains { $0.contains(frame) && $0.contains(anchor) }
         }
     }
 }

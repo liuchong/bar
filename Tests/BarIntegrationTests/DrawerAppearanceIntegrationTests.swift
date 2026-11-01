@@ -6,6 +6,38 @@ import BarCore
 
 @Suite("Drawer presentation")
 struct DrawerAppearanceIntegrationTests {
+    @Test @MainActor func drawerCellsKeepTheirSnapshotWidthWhenImagesRefresh() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(store: ConfigurationStore(url: directory.appendingPathComponent("settings.json")), imageAuthorization: { false })
+        model.trusted = false
+        defer { model.shutdown() }
+        let item = MenuItem(id: "wide", bundle: "wide", appName: "Wide", label: "Wide", icon: NSImage(),
+            element: AXUIElementCreateApplication(10), frame: CGRect(x: 100, y: 0, width: 100, height: 24), pid: 10)
+        model.menuImages[item.id] = MenuBarImage(image: NSImage(size: NSSize(width: 100, height: 24)), dark: true, width: 100)
+        let host = DrawerHostingView(rootView: DrawerView(model: model, items: [DrawerEntry(item: item, width: 24)], height: 32))
+        host.frame = CGRect(x: 0, y: 0, width: 24, height: 32)
+        #expect(host.fittingSize.width == 24)
+        let surface = DrawerSurfaceView(frame: host.frame)
+        for style in [ExpansionStyle.left, .below] {
+            surface.configure(style: style)
+            #expect(surface.layer?.masksToBounds == true)
+        }
+    }
+
+    @Test @MainActor func imageSamplingRejectsMovingFramesAndNeverRoundsIntoNeighbors() {
+        func item(_ x: CGFloat, pid: Int32 = 10) -> MenuItem {
+            MenuItem(id: "sample", bundle: "sample", appName: "Sample", label: "Sample", icon: NSImage(),
+                element: AXUIElementCreateApplication(pid), frame: CGRect(x: x, y: 0, width: 24, height: 32), pid: pid)
+        }
+        #expect(MenuBarImages.sameGeometry([item(100)], [item(100)]))
+        #expect(!MenuBarImages.sameGeometry([item(100)], [item(100.5)]))
+        #expect(!MenuBarImages.sameGeometry([item(100)], [item(100, pid: 11)]))
+        #expect(!MenuBarImages.sameGeometry([item(100)], []))
+        let rect = MenuBarImages.cropRect(CGRect(x: 10.25, y: 0.25, width: 24, height: 32), scale: 2)
+        #expect(rect == CGRect(x: 21, y: 1, width: 47, height: 63))
+        #expect(rect.minX >= 20.5 && rect.maxX <= 68.5)
+    }
     @Test @MainActor func drawerStatesAreMonochromeAndHaveDistinctPullDirections() throws {
         var directionalMasks: [[UInt8]] = []
         for (expanded, paused, style) in [(false, false, ExpansionStyle.below), (true, false, .below),

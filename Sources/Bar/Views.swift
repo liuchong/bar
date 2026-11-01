@@ -16,10 +16,11 @@ struct DrawerView: View {
                     Button { model.open(item) } label: {
                         Group {
                             if let original = model.menuImages[item.id] {
-                                Image(nsImage: original.image).interpolation(.high)
+                                Image(nsImage: original.image).resizable().interpolation(.high).scaledToFit()
                             }
                         }
-                        .frame(width: model.iconWidth(item), height: height)
+                        .frame(width: entry.width, height: height)
+                        .clipped()
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(MenuGlyphButtonStyle())
@@ -50,7 +51,7 @@ struct DrawerView: View {
                     .help(model.imageAccess ? "重新读取缺失的原菜单栏图像" : "需要屏幕录制权限才能显示原菜单栏图标")
                 }
             }
-        }.fixedSize()
+        }.frame(width: items.reduce(0) { $0 + $1.width }, height: height).clipped()
     }
 }
 

@@ -226,6 +226,7 @@ final class BarController: NSObject, NSWindowDelegate {
                 hosting.frame = background.bounds; hosting.autoresizingMask = [.width, .height]
                 background.hosting = hosting; background.addSubview(hosting)
             }
+            background.layoutSubtreeIfNeeded()
             panel.orderFrontRegardless()
         }
         refreshContrast()

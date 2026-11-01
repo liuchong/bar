@@ -25,13 +25,14 @@ struct DrawerLayoutTests {
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let anchor = CGRect(x: 1000, y: 0, width: 28, height: 32)
         let good = CGRect(x: 960, y: 0, width: 32, height: 32)
-        #expect(StableMenuBar.canReveal(originals: [good], anchor: anchor, displays: [screen]))
+        #expect(StableMenuBar.canInteract(originals: [good], anchor: anchor, displays: [screen]))
+        #expect(StableMenuBar.canInteract(originals: [good, CGRect(x: 1030, y: 0, width: 32, height: 32)], anchor: anchor, displays: [screen]))
         for bad in [CGRect.zero, CGRect(x: -40, y: 0, width: 32, height: 32),
-                    CGRect(x: 1030, y: 0, width: 32, height: 32),
+                    CGRect(x: 1000, y: 0, width: 28, height: 32),
                     CGRect(x: 960, y: 400, width: 32, height: 32)] {
-            #expect(!StableMenuBar.canReveal(originals: [good, bad], anchor: anchor, displays: [screen]))
+            #expect(!StableMenuBar.canInteract(originals: [good, bad], anchor: anchor, displays: [screen]))
         }
-        #expect(!StableMenuBar.canReveal(originals: [], anchor: anchor, displays: [screen]))
+        #expect(!StableMenuBar.canInteract(originals: [], anchor: anchor, displays: [screen]))
     }
 
     @Test func externalScreenUsesItsOwnOriginAndHasNoArtificialCameraGap() {

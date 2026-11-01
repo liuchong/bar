@@ -20,6 +20,47 @@ final class MenuBarImages {
         }
     }
 
+    static func sameGeometry(_ first: [MenuItem], _ second: [MenuItem]) -> Bool {
+        guard first.count == second.count else { return false }
+        let other = Dictionary(second.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return first.allSatisfy { item in
+            guard let next = other[item.id] else { return false }
+            return item.pid == next.pid && item.frame == next.frame && item.label == next.label
+        }
+    }
+
+    /// AX can report final coordinates while the compositor is still animating.
+    /// Sample after a quiet interval, then discard a capture if its layout changed.
+    static func captureStable(_ items: [MenuItem], refresh: (String) async -> [MenuItem]) async throws -> [String: MenuBarImage] {
+        guard !items.isEmpty else { return [:] }
+        let ids = Set(items.map(\.id)), bundles = Set(items.map(\.bundle)).sorted()
+        func snapshot() async -> [MenuItem] {
+            var result: [MenuItem] = []
+            for bundle in bundles { result += await refresh(bundle).filter { ids.contains($0.id) } }
+            return result
+        }
+        var before = await snapshot()
+        for _ in 0..<3 {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(300))
+            let settled = await snapshot()
+            if sameGeometry(before, settled), !settled.isEmpty {
+                let captured = try await capture(settled)
+                let after = await snapshot()
+                if sameGeometry(settled, after) { return captured }
+                before = after
+            } else { before = settled }
+        }
+        return [:]
+    }
+
+    static func cropRect(_ frame: CGRect, scale: CGFloat) -> CGRect {
+        // Outward rounding can include a bright pixel from a neighboring icon.
+        let left = ceil(frame.minX * scale), top = ceil(frame.minY * scale)
+        return CGRect(x: left, y: top, width: max(0, floor(frame.maxX * scale) - left),
+                      height: max(0, floor(frame.maxY * scale) - top))
+    }
+
     static func capture(_ items: [MenuItem]) async throws -> [String: MenuBarImage] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         var result: [String: MenuBarImage] = [:]
@@ -42,8 +83,7 @@ final class MenuBarImages {
             backgroundDark[display.displayID] = isDark(image)
             var foregroundVotes: [Bool] = []
             for item in visible {
-                let rect = item.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
-                    .applying(CGAffineTransform(scaleX: scale, y: scale)).integral
+                let rect = cropRect(item.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY), scale: scale)
                 guard let crop = image.cropping(to: rect), let glyph = extract(crop, points: item.frame.size) else { continue }
                 result[item.id] = glyph
                 if glyph.image.isTemplate { foregroundVotes.append(glyph.dark) }

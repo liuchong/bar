@@ -16,6 +16,7 @@ enum NativePointer {
         let command: Bool
         let right: Bool
         var pressed = false
+        let source = CGEventSource(stateID: .hidSystemState)
         init(origin: CGPoint, source: CGPoint, display: CGDirectDisplayID, command: Bool, right: Bool) {
             self.origin = origin; self.point = source; self.display = display
             self.command = command; self.right = right
@@ -26,7 +27,7 @@ enum NativePointer {
     static func cancel() {
         guard let current = session else { return }
         session = nil
-        if current.pressed { post(current.right ? .rightMouseUp : .leftMouseUp, at: current.point, command: current.command) }
+        if current.pressed { post(current.right ? .rightMouseUp : .leftMouseUp, at: current.point, command: current.command, source: current.source) }
         for monitor in current.monitors { NSEvent.removeMonitor(monitor) }
         let destination = CGPoint(x: current.origin.x + current.delta.x, y: current.origin.y + current.delta.y)
         CGWarpMouseCursorPosition(destination)
@@ -58,7 +59,7 @@ enum NativePointer {
         }
         let current = Session(origin: origin, source: source, display: display, command: command, right: right)
         session = current
-        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
+        let mask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
             .otherMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
         let receive: (NSEvent) -> Void = { event in
             guard session === current, event.cgEvent?.getIntegerValueField(.eventSourceUserData) != tag else { return }
@@ -93,19 +94,24 @@ enum NativePointer {
         guard session === current, !Task.isCancelled else { return false }
         current.pressed = true
         post(.leftMouseDown, at: source, command: true)
-        for step in 1...8 {
+        try? await Task.sleep(for: .milliseconds(60))
+        for step in 1...12 {
             guard session === current, !Task.isCancelled else { return false }
-            let t = CGFloat(step) / 8
+            let t = CGFloat(step) / 12
             current.point = CGPoint(x: source.x + (destination.x - source.x) * t,
                                     y: source.y + (destination.y - source.y) * t)
             post(.leftMouseDragged, at: current.point, command: true)
-            try? await Task.sleep(for: .milliseconds(8))
+            try? await Task.sleep(for: .milliseconds(12))
         }
         return session === current && !Task.isCancelled
     }
 
-    private static func post(_ type: CGEventType, at point: CGPoint, command: Bool) {
-        let source = CGEventSource(stateID: .privateState)
+    private static func post(_ type: CGEventType, at point: CGPoint, command: Bool, source explicitSource: CGEventSource? = nil) {
+        let source = explicitSource ?? session?.source ?? CGEventSource(stateID: .hidSystemState)
+        // With the physical mouse disconnected, event coordinates alone do not
+        // advance the cursor used by the menu-bar drag manager. Warp while hidden;
+        // physical input still cancels the transaction and restores the user's point.
+        if session != nil { CGWarpMouseCursorPosition(point) }
         source?.localEventsSuppressionInterval = 0
         source?.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitLocalKeyboardEvents,
             .permitSystemDefinedEvents], state: .eventSuppressionStateRemoteMouseDrag)

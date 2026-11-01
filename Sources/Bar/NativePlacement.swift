@@ -182,6 +182,10 @@ enum NativePlacement {
             entries = await scan(bundle)
             if let bar = anchor(), succeeded, !entries.isEmpty,
                StableMenuBar.canReveal(originals: entries.map(\.frame), anchor: bar, displays: displayFrames()) { safe.insert(bundle) }
+            else if let bar = anchor(), !Task.isCancelled {
+                let positions = entries.map { "\($0.frame.minX)-\($0.frame.maxX)" }.joined(separator: ",")
+                Logger(subsystem: "com.liuchong.bar", category: "Ordering").notice("Collection layout unavailable bar=\(bar.minX)-\(bar.maxX) entries=\(positions, privacy: .public)")
+            }
         }
         return safe
     }

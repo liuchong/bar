@@ -189,6 +189,8 @@ struct DrawerAppearanceIntegrationTests {
                      element: AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier),
                      frame: CGRect(x: 0, y: 0, width: 24, height: 24), pid: ProcessInfo.processInfo.processIdentifier)
         }
+        model.beginVisibilityRequest(allowed: [], systemItems: Set(0..<64))
+        model.acknowledgeVisibility(allowed: [], systemItems: Set(0..<64))
         #expect(model.drawerEntries.count == 1)
         #expect(model.drawerEntries.first?.item == nil)
         let glyph = NSImage(size: NSSize(width: 24, height: 24))

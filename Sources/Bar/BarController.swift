@@ -207,7 +207,11 @@ final class BarController: NSObject, NSWindowDelegate {
             let group = groups[index]
             let background = panel.contentView as! DrawerSurfaceView
             let isLowerRow = group.frame.maxY < screen.frame.maxY - height
-            background.configure(style: isLowerRow ? .below : .left, density: model.configuration.drawerBackgroundDensity)
+            let neighbors = groups.enumerated().filter { $0.offset != index &&
+                abs($0.element.frame.minY - group.frame.minY) < 0.5 && abs($0.element.frame.height - group.frame.height) < 0.5 }
+            background.configure(style: isLowerRow ? .below : .left, density: model.configuration.drawerBackgroundDensity,
+                leftEdge: !neighbors.contains { abs($0.element.frame.maxX - group.frame.minX) < 0.5 },
+                rightEdge: !neighbors.contains { abs($0.element.frame.minX - group.frame.maxX) < 0.5 })
             panel.hasShadow = false
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let dark = (isLowerRow ? lowerContrast[index] : nil)

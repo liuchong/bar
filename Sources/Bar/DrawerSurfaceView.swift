@@ -18,6 +18,12 @@ struct DrawerEntry: Identifiable {
 final class DrawerSurfaceView: NSView {
     let glass = NSGlassEffectView()
     let solid = NSView()
+    private let material = NSView()
+    private let outline = CAShapeLayer()
+    private let sideFade = CAGradientLayer()
+    private let bottomFade = CAGradientLayer()
+    private var leftEdge = true
+    private var rightEdge = true
     var hosting: NSView?
     private var style: ExpansionStyle = .left
     private var density = DrawerBackground.defaultDensity
@@ -32,9 +38,14 @@ final class DrawerSurfaceView: NSView {
         glass.cornerRadius = 0
         glass.effectIsInteractive = false
         glass.contentView = NSView()
-        addSubview(glass)
+        material.wantsLayer = true
+        addSubview(material)
+        material.addSubview(glass)
         solid.wantsLayer = true
-        addSubview(solid)
+        material.addSubview(solid)
+        outline.fillColor = NSColor.black.cgColor
+        outline.mask = sideFade
+        sideFade.mask = bottomFade
         accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -45,10 +56,47 @@ final class DrawerSurfaceView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { if let accessibilityObserver { NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver) } }
 
-    func configure(style: ExpansionStyle, density: Double = DrawerBackground.defaultDensity) {
+    func configure(style: ExpansionStyle, density: Double = DrawerBackground.defaultDensity,
+                   leftEdge: Bool = true, rightEdge: Bool = true) {
         self.style = style; self.density = DrawerBackground.normalized(density)
+        self.leftEdge = leftEdge; self.rightEdge = rightEdge
         layer?.masksToBounds = style == .below
         updateMaterial()
+        updateEdges()
+    }
+
+    private func updateEdges() {
+        guard style == .below, bounds.width > 0, bounds.height > 0 else {
+            material.layer?.mask = nil; return
+        }
+        // Mask only the material: glyphs and their hit regions stay fully opaque.
+        // Adjacent columns share a straight join, without a faded seam in the middle.
+        let width = bounds.width, height = bounds.height
+        let radius = min(5, width / 2, height / 2)
+        let feather: CGFloat = min(1.5, width / 4, height / 4)
+        let leftRadius = leftEdge ? radius : 0, rightRadius = rightEdge ? radius : 0
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 0, y: height))
+        path.addLine(to: CGPoint(x: width, y: height))
+        path.addLine(to: CGPoint(x: width, y: rightRadius))
+        path.addQuadCurve(to: CGPoint(x: width - rightRadius, y: 0), control: CGPoint(x: width, y: 0))
+        path.addLine(to: CGPoint(x: leftRadius, y: 0))
+        path.addQuadCurve(to: CGPoint(x: 0, y: leftRadius), control: .zero)
+        path.closeSubpath()
+        let opaque = NSColor.black.cgColor, clear = NSColor.clear.cgColor
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        outline.frame = material.bounds; outline.path = path
+        outline.contentsScale = window?.backingScaleFactor ?? 2
+        sideFade.frame = material.bounds
+        sideFade.startPoint = CGPoint(x: 0, y: 0.5); sideFade.endPoint = CGPoint(x: 1, y: 0.5)
+        sideFade.colors = [leftEdge ? clear : opaque, opaque, opaque, rightEdge ? clear : opaque]
+        sideFade.locations = [0, NSNumber(value: Double(feather / width)), NSNumber(value: Double(1 - feather / width)), 1]
+        bottomFade.frame = material.bounds
+        bottomFade.startPoint = CGPoint(x: 0.5, y: 0); bottomFade.endPoint = CGPoint(x: 0.5, y: 1)
+        bottomFade.colors = [clear, opaque, opaque]
+        bottomFade.locations = [0, NSNumber(value: Double(feather / height)), 1]
+        material.layer?.mask = outline
+        CATransaction.commit()
     }
 
     private func updateMaterial() {
@@ -71,9 +119,11 @@ final class DrawerSurfaceView: NSView {
     }
     override func layout() {
         super.layout()
-        glass.frame = bounds; solid.frame = bounds
+        material.frame = bounds
+        glass.frame = material.bounds; solid.frame = material.bounds
         glass.contentView?.frame = glass.bounds
         hosting?.frame = bounds
+        updateEdges()
     }
 }
 

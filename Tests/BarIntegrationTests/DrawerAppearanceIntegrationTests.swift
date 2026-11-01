@@ -124,13 +124,56 @@ struct DrawerAppearanceIntegrationTests {
     @Test @MainActor func topRowUsesExistingBackdropAndLowerRowBlurs() {
         let surface = DrawerSurfaceView(frame: CGRect(x: 0, y: 0, width: 100, height: 24))
         surface.configure(style: .left)
-        #expect(surface.blur.isHidden)
+        #expect(surface.glass.isHidden)
         #expect(surface.layer?.backgroundColor?.alpha == 0)
         surface.configure(style: .below)
-        #expect(!surface.blur.isHidden)
-        #expect(surface.blur.blendingMode == .behindWindow)
+        #expect(surface.glass.isHidden == NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency)
+        #expect(surface.glass.style == .clear)
+        #expect(surface.glass.tintColor == nil)
         surface.configure(style: .left)
-        #expect(surface.blur.isHidden)
+        #expect(surface.glass.isHidden)
+    }
+
+    @Test @MainActor func continuousBackgroundReachesTransparentGlassAndSolidWithoutFadingIcons() {
+        let surface = DrawerSurfaceView(frame: NSRect(x: 0, y: 0, width: 160, height: 30))
+        let glyphs = NSView(frame: surface.bounds)
+        surface.hosting = glyphs; surface.addSubview(glyphs)
+        surface.configure(style: .below, density: 0)
+        #expect(surface.glass.isHidden && surface.solid.isHidden)
+        surface.configure(style: .below, density: 0.65)
+        #expect(surface.glass.tintColor == nil)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            #expect(!surface.glass.isHidden && surface.solid.isHidden)
+            #expect(surface.glass.alphaValue == 1)
+        }
+        surface.configure(style: .below, density: 1)
+        #expect(surface.glass.isHidden && !surface.solid.isHidden)
+        #expect(surface.solid.layer?.backgroundColor?.alpha == 1)
+        #expect(glyphs.alphaValue == 1 && surface.subviews.last === glyphs)
+        for density in [0.0, 0.25, 0.65, 0.85, 1] {
+            surface.configure(style: .left, density: density)
+            #expect(surface.glass.isHidden && surface.solid.isHidden)
+        }
+    }
+
+    @Test @MainActor func densitySavesAndRestoresWithoutStartingNativeIconOperations() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(url: directory.appendingPathComponent("settings.json"))
+        let model = AppModel(store: store, imageAuthorization: { false })
+        defer { model.shutdown() }
+        model.configuration.setPlacement(.left, for: "app.one")
+        let original = model.configuration
+        var changes = 0
+        model.presentationChanged = { changes += 1 }
+        for value in [0.0, 0.25, 0.65, 0.85, 1] {
+            model.setDrawerBackgroundDensity(value)
+            let restored = try store.load()
+            #expect(restored.drawerBackgroundDensity == value)
+            #expect(restored.dispositions == original.dispositions && restored.order == original.order)
+            #expect(!model.orderingItems && !model.capturingImages)
+        }
+        #expect(changes == 5)
     }
 
     @Test @MainActor func missingImagesHaveOneActionAlongsideGenuineGlyphs() throws {

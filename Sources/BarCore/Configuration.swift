@@ -34,6 +34,23 @@ public enum ExpansionBehavior: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// A continuous progression: transparent, clear glass, then an opaque system color.
+public enum DrawerBackground {
+    public static let defaultDensity = 0.65
+    public static func normalized(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : defaultDensity
+    }
+    private static func smoothstep(_ value: Double) -> Double {
+        let t = min(1, max(0, value)); return t * t * (3 - 2 * t)
+    }
+    public static func glassOpacity(_ density: Double) -> Double {
+        smoothstep(normalized(density) / 0.65)
+    }
+    public static func solidOpacity(_ density: Double) -> Double {
+        smoothstep((normalized(density) - 0.72) / 0.28)
+    }
+}
+
 public struct Configuration: Codable, Equatable, Sendable {
     public var dispositions: [String: ItemDisposition] = [:]
     public var order: [String] = []
@@ -43,10 +60,11 @@ public struct Configuration: Codable, Equatable, Sendable {
     public var columnBehaviors: [String: ExpansionBehavior] = [:]
     public var style: ExpansionStyle = .below
     public var behavior: ExpansionBehavior = .manual
+    public var drawerBackgroundDensity: Double = DrawerBackground.defaultDensity
     public var hoverDelay: Double = 0.25
     public var hideDelay: Double = 1.2
     public init() {}
-    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, manageSystemIcons, ignored, style, behavior, hoverDelay, hideDelay }
+    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, manageSystemIcons, ignored, style, behavior, drawerBackgroundDensity, hoverDelay, hideDelay }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         dispositions = try values.decodeIfPresent([String: ItemDisposition].self, forKey: .dispositions) ?? [:]
@@ -57,6 +75,7 @@ public struct Configuration: Codable, Equatable, Sendable {
         ignored = try values.decodeIfPresent([String: Bool].self, forKey: .ignored) ?? [:]
         style = try values.decodeIfPresent(ExpansionStyle.self, forKey: .style) ?? .below
         behavior = try values.decodeIfPresent(ExpansionBehavior.self, forKey: .behavior) ?? .manual
+        drawerBackgroundDensity = DrawerBackground.normalized(try values.decodeIfPresent(Double.self, forKey: .drawerBackgroundDensity) ?? DrawerBackground.defaultDensity)
         hoverDelay = try values.decodeIfPresent(Double.self, forKey: .hoverDelay) ?? 0.25
         hideDelay = try values.decodeIfPresent(Double.self, forKey: .hideDelay) ?? 1.2
     }
@@ -108,6 +127,7 @@ public struct Configuration: Codable, Equatable, Sendable {
     }
 
     public mutating func normalize() {
+        drawerBackgroundDensity = DrawerBackground.normalized(drawerBackgroundDensity)
         order = order.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         hoverDelay = hoverDelay.isFinite ? min(2, max(0.1, hoverDelay)) : 0.25
         hideDelay = hideDelay.isFinite ? min(10, max(0.3, hideDelay)) : 1.2

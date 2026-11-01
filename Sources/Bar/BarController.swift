@@ -13,6 +13,7 @@ final class BarController: NSObject, NSWindowDelegate {
     private var states: [ItemSide: ExpansionState] = [:]
     private var columnBehaviors: [ItemSide: ExpansionBehavior] = [:]
     private var expanded: Bool { states.values.contains { $0.expanded } }
+    private var backgroundDensity: Double
     private var style: ExpansionStyle
     private var timer: Timer?
     private var subscriptions = Set<AnyCancellable>()
@@ -30,6 +31,7 @@ final class BarController: NSObject, NSWindowDelegate {
     init(model: AppModel) {
         self.model = model
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        backgroundDensity = model.configuration.drawerBackgroundDensity
         style = model.configuration.style
         super.init()
         for side in ItemSide.allCases {
@@ -105,7 +107,8 @@ final class BarController: NSObject, NSWindowDelegate {
     }
 
     private func configurationChanged() {
-        drawerAnchor = nil
+        if backgroundDensity == model.configuration.drawerBackgroundDensity { drawerAnchor = nil }
+        backgroundDensity = model.configuration.drawerBackgroundDensity
         for side in ItemSide.allCases {
             let mode = model.configuration.behavior(for: side)
             if columnBehaviors[side] != mode {
@@ -204,7 +207,7 @@ final class BarController: NSObject, NSWindowDelegate {
             let group = groups[index]
             let background = panel.contentView as! DrawerSurfaceView
             let isLowerRow = group.frame.maxY < screen.frame.maxY - height
-            background.configure(style: isLowerRow ? .below : .left)
+            background.configure(style: isLowerRow ? .below : .left, density: model.configuration.drawerBackgroundDensity)
             panel.hasShadow = false
             let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let dark = (isLowerRow ? lowerContrast[index] : nil)

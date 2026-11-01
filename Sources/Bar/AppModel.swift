@@ -262,6 +262,16 @@ final class AppModel: ObservableObject {
         reconcilePinnedOrder()
     }
 
+    func setDrawerBackgroundDensity(_ value: Double) {
+        var next = configuration
+        next.drawerBackgroundDensity = DrawerBackground.normalized(value)
+        guard next != configuration else { return }
+        do { try store.save(next) }
+        catch { message = "无法保存设置：\(error.localizedDescription)"; return }
+        configuration = next
+        presentationChanged?()
+    }
+
     private func freshItems(_ bundle: String) async -> [MenuItem] {
         let system = SystemItemPolicy.isSystem(bundle)
         let apps = NSWorkspace.shared.runningApplications.filter { system || $0.bundleIdentifier == bundle }

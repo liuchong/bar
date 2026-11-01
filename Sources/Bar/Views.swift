@@ -180,6 +180,24 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Section("下方抽屉背景 · 两栏共用") {
+                    HStack {
+                        Text("背景浓度")
+                        Spacer()
+                        Text("\(Int((model.configuration.drawerBackgroundDensity * 100).rounded()))%")
+                            .monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    Slider(value: Binding(get: { model.configuration.drawerBackgroundDensity },
+                        set: model.setDrawerBackgroundDensity), in: 0...1)
+                        .accessibilityLabel("下方抽屉背景浓度")
+                    HStack {
+                        Text("完全透明"); Spacer(); Text("液态玻璃"); Spacer(); Text("纯色")
+                    }.font(.caption).foregroundStyle(.secondary)
+                    DrawerBackgroundPreview(density: model.configuration.drawerBackgroundDensity)
+                        .frame(height: 60).accessibilityHidden(true)
+                    Text("默认 65%。中段保留背景颜色并实时模糊，接近右端才逐渐变为纯色。仅作用于下方抽屉，向左展开保持原样。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("忽略") {
                     ForEach(filteredApplications.filter { !SystemItemPolicy.isSystem($0.id) && model.configuration.placement(for: $0.id) == .ignored }, id: \.id) { app in
                         applicationRow(app)

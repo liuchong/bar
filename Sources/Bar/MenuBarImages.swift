@@ -40,18 +40,30 @@ final class MenuBarImages {
             return result
         }
         var before = await snapshot()
-        for _ in 0..<3 {
+        var best: [String: MenuBarImage] = [:]
+        for _ in 0..<5 {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(300))
             let settled = await snapshot()
-            if sameGeometry(before, settled), !settled.isEmpty {
-                let captured = try await capture(settled)
+            let previous = Dictionary(before.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let candidates = settled.filter { item in
+                guard best[item.id] == nil, let old = previous[item.id] else { return false }
+                return sameGeometry([old], [item])
+            }
+            if !candidates.isEmpty {
+                let captured = try await capture(candidates)
                 let after = await snapshot()
-                if sameGeometry(settled, after) { return captured }
+                let next = Dictionary(after.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                for item in candidates {
+                    guard let updated = next[item.id], sameGeometry([item], [updated]),
+                          let glyph = captured[item.id] else { continue }
+                    best[item.id] = glyph
+                }
                 before = after
+                if !settled.isEmpty, settled.allSatisfy({ best[$0.id] != nil }) { return best }
             } else { before = settled }
         }
-        return [:]
+        return best
     }
 
     static func cropRect(_ frame: CGRect, scale: CGFloat) -> CGRect {

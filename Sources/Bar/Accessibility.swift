@@ -47,19 +47,22 @@ enum MenuAccessibility {
         AXUIElementCopyActionNames(element, &names)
         return names as? [String] ?? []
     }
-    /// Runs on a serial worker. A timeout bounds each app's IPC; own app is deliberately excluded.
+    /// Runs on a serial worker. A timeout bounds each app's IPC; own app and Apple system daemons are excluded.
     static func scan(_ apps: [NSRunningApplication]) -> [MenuItem] {
         var items: [MenuItem] = []
-        for app in apps where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            guard let bundle = app.bundleIdentifier, !systemHosts.contains(bundle) else { continue }
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        for app in apps where app.processIdentifier != selfPID && app.activationPolicy != .prohibited {
+            guard let bundle = app.bundleIdentifier,
+                  !bundle.hasPrefix("com.apple."),
+                  !systemHosts.contains(bundle) else { continue }
             let root = AXUIElementCreateApplication(app.processIdentifier)
-            AXUIElementSetMessagingTimeout(root, 0.08)
+            AXUIElementSetMessagingTimeout(root, 0.12)
             guard let raw = value(root, "AXExtrasMenuBar"), CFGetTypeID(raw) == AXUIElementGetTypeID() else { continue }
             let bar = raw as! AXUIElement
             for (index, container) in children(bar).enumerated() {
                 let element = actions(container).isEmpty ? (children(container).first ?? container) : container
-                AXUIElementSetMessagingTimeout(element, 0.08)
-                let description = [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
+                AXUIElementSetMessagingTimeout(element, 0.12)
+                let description = [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
                     .map { text(element, $0).components(separatedBy: .newlines).first ?? "" }
                     .first { !$0.isEmpty } ?? ""
                 let appName = app.localizedName ?? bundle

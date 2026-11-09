@@ -40,6 +40,7 @@ final class BarController: NSObject, NSWindowDelegate {
             states[side] = state; columnBehaviors[side] = mode
         }
         status.autosaveName = "Bar.Entry"
+        status.isVisible = true
         if let button = status.button {
             button.image = Brand.menuIcon()
             button.target = self; button.action = #selector(clicked)
@@ -233,10 +234,9 @@ final class BarController: NSObject, NSWindowDelegate {
     }
 
     private func refreshContrast() {
-        guard contrastTask == nil, !model.capturingImages, MenuBarImages.authorized,
-              Date().timeIntervalSince(lastContrastSample) >= 0.8 else { return }
         let frames = panels.filter(\.isVisible).map(\.frame)
-        guard !frames.isEmpty else { return }
+        guard !frames.isEmpty, contrastTask == nil, !model.capturingImages, model.imageAccess,
+              Date().timeIntervalSince(lastContrastSample) >= 0.8 else { return }
         lastContrastSample = Date()
         contrastTask = Task { [weak self] in
             defer { self?.contrastTask = nil }
@@ -393,6 +393,5 @@ final class BarController: NSObject, NSWindowDelegate {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
         model.shutdown()
-        NSStatusBar.system.removeStatusItem(status)
     }
 }

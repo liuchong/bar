@@ -63,8 +63,13 @@ public struct Configuration: Codable, Equatable, Sendable {
     public var drawerBackgroundDensity: Double = DrawerBackground.defaultDensity
     public var hoverDelay: Double = 0.25
     public var hideDelay: Double = 1.2
+    public var revealOnNotification = true
+    public var notificationRetractDelay: Double = 5.0
     public init() {}
-    enum CodingKeys: String, CodingKey { case dispositions, order, sides, columnBehaviors, manageSystemIcons, ignored, style, behavior, drawerBackgroundDensity, hoverDelay, hideDelay }
+    enum CodingKeys: String, CodingKey {
+        case dispositions, order, sides, columnBehaviors, manageSystemIcons, ignored, style, behavior,
+             drawerBackgroundDensity, hoverDelay, hideDelay, revealOnNotification, notificationRetractDelay
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         dispositions = try values.decodeIfPresent([String: ItemDisposition].self, forKey: .dispositions) ?? [:]
@@ -78,6 +83,8 @@ public struct Configuration: Codable, Equatable, Sendable {
         drawerBackgroundDensity = DrawerBackground.normalized(try values.decodeIfPresent(Double.self, forKey: .drawerBackgroundDensity) ?? DrawerBackground.defaultDensity)
         hoverDelay = try values.decodeIfPresent(Double.self, forKey: .hoverDelay) ?? 0.25
         hideDelay = try values.decodeIfPresent(Double.self, forKey: .hideDelay) ?? 1.2
+        revealOnNotification = try values.decodeIfPresent(Bool.self, forKey: .revealOnNotification) ?? true
+        notificationRetractDelay = try values.decodeIfPresent(Double.self, forKey: .notificationRetractDelay) ?? 5.0
     }
     public func behavior(for side: ItemSide) -> ExpansionBehavior { columnBehaviors[side.rawValue] ?? behavior }
     public func expansionConfiguration(for side: ItemSide) -> Configuration {
@@ -131,17 +138,21 @@ public struct Configuration: Codable, Equatable, Sendable {
         order = order.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         hoverDelay = hoverDelay.isFinite ? min(2, max(0.1, hoverDelay)) : 0.25
         hideDelay = hideDelay.isFinite ? min(10, max(0.3, hideDelay)) : 1.2
+        notificationRetractDelay = notificationRetractDelay.isFinite ? min(30, max(1, notificationRetractDelay)) : 5.0
     }
 }
 
 public enum VisibilityPolicy {
     /// A saved collection rule must not hide a newly launched process before
     /// its status items have been discovered and prepared by the host.
+    /// Auxiliary helper processes sharing a bundle identifier do not invalidate
+    /// an already discovered running status-item process for that bundle.
     public static func awaitingDiscovery(running: [String: Set<Int32>], discovered: [String: Set<Int32>],
                                          configuration: Configuration) -> Set<String> {
         Set(running.compactMap { bundle, processes in
             guard configuration.disposition(for: bundle) == .collected,
-                  !(discovered[bundle] ?? []).isSuperset(of: processes) else { return nil }
+                  !processes.isEmpty,
+                  (discovered[bundle] ?? []).isDisjoint(with: processes) else { return nil }
             return bundle
         })
     }
@@ -156,6 +167,111 @@ public enum VisibilityPolicy {
         guard !denied.isEmpty else { return nil }
         return running.subtracting(denied).union([host, "com.apple.MenuBarAgent",
                                                   "com.apple.controlcenter", "com.apple.systemuiserver"])
+    }
+}
+
+public struct StatusItemSnapshot: Equatable, Sendable {
+    public let id: String
+    public let bundle: String
+    public let pid: Int32
+    public let label: String
+    public let appName: String
+    public let width: Double
+
+    public init(id: String, bundle: String, pid: Int32, label: String, appName: String, width: Double) {
+        self.id = id; self.bundle = bundle; self.pid = pid
+        self.label = label; self.appName = appName; self.width = width
+    }
+
+    public var hasBadgeOrCustomStatus: Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != appName
+    }
+
+    public static func isNotificationChange(from previous: StatusItemSnapshot, to current: StatusItemSnapshot) -> Bool {
+        guard previous.id == current.id, previous.pid == current.pid else { return false }
+        if current.label != previous.label {
+            let oldText = previous.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newText = current.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if newText.isEmpty || newText == current.appName {
+                return current.width - previous.width >= 2
+            }
+            if let oldNumber = Int(oldText), let newNumber = Int(newText) {
+                return newNumber > oldNumber
+            }
+            return true
+        }
+        return current.width - previous.width >= 2
+    }
+}
+
+public struct NotificationRevealState: Equatable, Sendable {
+    private var snapshots: [String: StatusItemSnapshot] = [:]
+    public private(set) var activeDeadlines: [String: Double] = [:]
+    public init() {}
+
+    @discardableResult
+    public mutating func observe(_ items: [StatusItemSnapshot], preparedBundles: Set<String>,
+                                 now: Double, configuration: Configuration) -> Set<String> {
+        let previousByBundle = Dictionary(grouping: snapshots.values, by: \.bundle)
+        var nextSnapshots: [String: StatusItemSnapshot] = [:]
+        var triggered = Set<String>()
+        let currentByBundle = Dictionary(grouping: items, by: \.bundle)
+        for (bundle, currentItems) in currentByBundle {
+            let oldItems = previousByBundle[bundle] ?? []
+            let sameProcess = !oldItems.isEmpty && Set(oldItems.map(\.pid)) == Set(currentItems.map(\.pid))
+            if configuration.revealOnNotification,
+               configuration.disposition(for: bundle) == .collected,
+               preparedBundles.contains(bundle),
+               sameProcess {
+                if currentItems.count > oldItems.count {
+                    triggered.insert(bundle)
+                } else {
+                    for item in currentItems {
+                        if let prev = snapshots[item.id], StatusItemSnapshot.isNotificationChange(from: prev, to: item) {
+                            triggered.insert(bundle)
+                        }
+                    }
+                }
+            }
+            for item in currentItems { nextSnapshots[item.id] = item }
+        }
+        snapshots = nextSnapshots
+        if !configuration.revealOnNotification {
+            activeDeadlines.removeAll()
+            return []
+        }
+        let delay = max(1, min(30, configuration.notificationRetractDelay))
+        for bundle in triggered {
+            activeDeadlines[bundle] = now + delay
+        }
+        pruneExpired(now: now, configuration: configuration)
+        return triggered
+    }
+
+    public mutating func pruneExpired(now: Double, configuration: Configuration) {
+        guard configuration.revealOnNotification else {
+            activeDeadlines.removeAll()
+            return
+        }
+        activeDeadlines = activeDeadlines.filter { bundle, deadline in
+            configuration.disposition(for: bundle) == .collected && deadline > now
+        }
+    }
+
+    public mutating func clear(_ bundle: String) {
+        activeDeadlines.removeValue(forKey: bundle)
+    }
+
+    public func activeBundles(now: Double, configuration: Configuration) -> Set<String> {
+        guard configuration.revealOnNotification else { return [] }
+        return Set(activeDeadlines.compactMap { bundle, deadline in
+            configuration.disposition(for: bundle) == .collected && deadline > now ? bundle : nil
+        })
+    }
+
+    public func nextExpiration(after now: Double) -> Double? {
+        activeDeadlines.values.filter { $0 > now }.min()
     }
 }
 

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import BarCore
 
@@ -82,5 +83,40 @@ struct ExpansionTests {
         config.setPlacement(.right, for: "app.one")
         #expect(VisibilityPolicy.allowed(running: running, configuration: config,
             temporary: nil, host: "bar.host")?.contains("app.one") == false)
+    }
+
+    @Test func notificationSettingsNormalizeAndDecodeBackwardCompatibly() throws {
+        var config = Configuration()
+        #expect(config.revealOnNotification == true)
+        #expect(config.notificationRetractDelay == 5.0)
+        config.notificationRetractDelay = .nan
+        config.normalize()
+        #expect(config.notificationRetractDelay == 5.0)
+        config.notificationRetractDelay = 0.2
+        config.normalize()
+        #expect(config.notificationRetractDelay == 1.0)
+        config.notificationRetractDelay = 120
+        config.normalize()
+        #expect(config.notificationRetractDelay == 30.0)
+
+        let legacyJSON = Data(#"{"behavior":"manual","style":"left"}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(Configuration.self, from: legacyJSON)
+        #expect(decodedLegacy.revealOnNotification == true)
+        #expect(decodedLegacy.notificationRetractDelay == 5.0)
+    }
+
+    @Test func statusItemSnapshotDistinguishesNewNotificationsFromReadClearsAndRestarts() {
+        let idle = StatusItemSnapshot(id: "lark#0", bundle: "lark", pid: 100, label: "Lark Helper", appName: "Lark Helper", width: 36)
+        let unread1 = StatusItemSnapshot(id: "lark#0", bundle: "lark", pid: 100, label: "1", appName: "Lark Helper", width: 48)
+        let unread2 = StatusItemSnapshot(id: "lark#0", bundle: "lark", pid: 100, label: "2", appName: "Lark Helper", width: 48)
+        let restarted = StatusItemSnapshot(id: "lark#0", bundle: "lark", pid: 200, label: "1", appName: "Lark Helper", width: 48)
+        let widenedDot = StatusItemSnapshot(id: "lark#0", bundle: "lark", pid: 100, label: "Lark Helper", appName: "Lark Helper", width: 42)
+
+        #expect(StatusItemSnapshot.isNotificationChange(from: idle, to: unread1))
+        #expect(StatusItemSnapshot.isNotificationChange(from: unread1, to: unread2))
+        #expect(!StatusItemSnapshot.isNotificationChange(from: unread2, to: unread1))
+        #expect(!StatusItemSnapshot.isNotificationChange(from: unread1, to: idle))
+        #expect(!StatusItemSnapshot.isNotificationChange(from: idle, to: restarted))
+        #expect(StatusItemSnapshot.isNotificationChange(from: idle, to: widenedDot))
     }
 }

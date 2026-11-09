@@ -110,7 +110,7 @@ struct SettingsView: View {
                     .help("临时恢复全部图标的原生显示；分区、显示状态和排序规则保留，解除暂停后恢复。")
             }
             Section("图标与抽屉") {
-                Text("在“图标”页选择每项常显或收纳，并设置左、右抽屉如何展开。")
+                Text("在“图标”页选择每项常显或收纳，设置左、右抽屉如何展开，以及新消息或状态变化时是否临时弹出图标。")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("管理图标与抽屉…") { selectedPage = 1 }
             }
@@ -180,6 +180,19 @@ struct SettingsView: View {
                             model.update { $0.hideDelay = value }
                         }
                     }
+                }
+                Section("新消息与状态变化提醒 · 两栏共用") {
+                    Toggle("有新消息或状态变化时临时弹出图标", isOn: Binding(
+                        get: { model.configuration.revealOnNotification },
+                        set: { value in model.update { $0.revealOnNotification = value } }
+                    ))
+                    if model.configuration.revealOnNotification {
+                        delaySlider("弹出后自动收回", value: model.configuration.notificationRetractDelay, range: 1...30) { value in
+                            model.update { $0.notificationRetractDelay = value }
+                        }
+                    }
+                    Text("已收纳应用在菜单栏出现新未读计数、状态文字或图标宽度变化时，临时恢复到原生菜单栏显示，到时自动收回抽屉。飞书 / Lark、微信等是否仅在 @本人 时更新菜单栏通知角标，由对应应用自身的通知设置决定。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("下方抽屉背景 · 两栏共用") {
                     HStack {

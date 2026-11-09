@@ -43,6 +43,7 @@ final class AppModel: ObservableObject {
     var imagesDidRefresh: (() -> Void)?
     var nativeBarAnchor: (() -> CGRect?)?
     private var preparedBundles = Set<String>()
+    private var cleanMenuImages: [String: MenuBarImage] = [:]
     private var applicationMetadata: [String: ApplicationMetadata] = [:]
     private var applicationMetadataAttempts: [String: Date] = [:]
     private var temporaryBundle: String?
@@ -56,6 +57,11 @@ final class AppModel: ObservableObject {
     private var lastSystemItems: Set<Int>?
     private var preparing = Set<String>()
     private var unplaced = Set<String>()
+    private var unplacedRetryAt: [String: Date] = [:]
+    private var unplacedAttempts: [String: Int] = [:]
+    private var notificationRevealState = NotificationRevealState()
+    private var notificationWakeTask: Task<Void, Never>?
+    private var notificationCaptureTask: Task<Void, Never>?
     private var ruleTask: Task<Void, Never>?
     private var rulePreparationMessage: String?
     private var preparationBundle: String?
@@ -78,6 +84,7 @@ final class AppModel: ObservableObject {
     private let imageAuthorization: @MainActor () -> Bool
     private let store: ConfigurationStore
     private let worker = DispatchQueue(label: "bar.accessibility", qos: .userInitiated)
+    private let lookupWorker = DispatchQueue(label: "bar.accessibility.lookup", qos: .userInitiated)
     private let actionWorker = DispatchQueue(label: "bar.menu-actions", qos: .userInitiated)
     private var scanning = false
     private var scanAgain = false
@@ -125,10 +132,16 @@ final class AppModel: ObservableObject {
             }
     }
 
+    private var activeNotificationBundles: Set<String> {
+        notificationRevealState.activeBundles(now: ProcessInfo.processInfo.systemUptime, configuration: configuration)
+    }
+
     var nativePreservedItems: [MenuItem] {
-        items.filter { item in
+        let notified = activeNotificationBundles
+        return items.filter { item in
             let mode = configuration.disposition(for: item.bundle)
-            return mode == .untouched || mode == .pinned || preparing.contains(item.bundle) || unplaced.contains(item.bundle)
+            return mode == .untouched || mode == .pinned || preparing.contains(item.bundle) ||
+                unplaced.contains(item.bundle) || notified.contains(item.bundle)
         }
     }
 
@@ -152,7 +165,7 @@ final class AppModel: ObservableObject {
 
     private func isHiddenForDrawer(_ bundle: String) -> Bool {
         guard !paused, !engineFailed, !preparing.contains(bundle), !unplaced.contains(bundle),
-              bundle != temporaryBundle else { return false }
+              bundle != temporaryBundle, !activeNotificationBundles.contains(bundle) else { return false }
         if let number = SystemItemPolicy.identifiers[bundle] {
             return lastSystemItems?.contains(number) == false && acknowledgedSystemItems?.contains(number) == false
         }
@@ -302,7 +315,7 @@ final class AppModel: ObservableObject {
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.refreshImages(force: true) }
             }
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        scanTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.scan() }
         }
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
@@ -333,6 +346,8 @@ final class AppModel: ObservableObject {
             checkedOrder = nativeOrderingPlan(anchor: anchor).signature(revision: orderRevision)
         } else { orderRevision += 1; checkedOrder = "" }
         engineFailed = false
+        notificationRevealState.pruneExpired(now: ProcessInfo.processInfo.systemUptime, configuration: configuration)
+        scheduleNotificationExpiration()
         applyVisibility()
         presentationChanged?()
         refreshImages()
@@ -354,10 +369,63 @@ final class AppModel: ObservableObject {
         let apps = NSWorkspace.shared.runningApplications.filter { system || $0.bundleIdentifier == bundle }
         let inputSourceNames = system ? InputSourceMenu.names() : []
         return await withCheckedContinuation { continuation in
-            worker.async {
+            lookupWorker.async {
                 let found = system ? MenuAccessibility.systemItems(apps, inputSourceNames: inputSourceNames).filter { $0.bundle == bundle } : MenuAccessibility.scan(apps)
                 continuation.resume(returning: found)
             }
+        }
+    }
+
+    private func storeCapturedImages(_ captured: [String: MenuBarImage], for candidates: [MenuItem]) {
+        let byID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for (id, image) in captured {
+            menuImages[id] = image
+            if let item = byID[id], item.label.trimmingCharacters(in: .whitespacesAndNewlines) == item.appName {
+                cleanMenuImages[id] = image
+            }
+        }
+    }
+
+    private func scheduleNotificationExpiration() {
+        notificationWakeTask?.cancel()
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let next = notificationRevealState.nextExpiration(after: now) else {
+            notificationWakeTask = nil
+            return
+        }
+        let delay = max(0.05, next - now + 0.05)
+        notificationWakeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, !self.stopping else { return }
+            self.notificationWakeTask = nil
+            self.notificationRevealState.pruneExpired(now: ProcessInfo.processInfo.systemUptime, configuration: self.configuration)
+            self.applyVisibility()
+            self.presentationChanged?()
+            self.scheduleNotificationExpiration()
+        }
+    }
+
+    private func captureNotificationImages(for bundles: Set<String>) {
+        guard imageAccess, !bundles.isEmpty else { return }
+        notificationCaptureTask?.cancel()
+        notificationCaptureTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.notificationCaptureTask = nil }
+            for _ in 0..<40 {
+                if self.visibilitySettled && !self.capturingImages && !self.preparingRules { break }
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, self.imageAccess else { return }
+            var candidates: [MenuItem] = []
+            for bundle in bundles.sorted() where self.activeNotificationBundles.contains(bundle) {
+                candidates += await self.freshItems(bundle)
+            }
+            guard !Task.isCancelled, !candidates.isEmpty,
+                  let captured = try? await MenuBarImages.captureStable(candidates, refresh: self.freshItems),
+                  !Task.isCancelled else { return }
+            self.storeCapturedImages(captured, for: candidates)
+            self.imagesDidRefresh?()
         }
     }
 
@@ -393,13 +461,20 @@ final class AppModel: ObservableObject {
         var next = configuration; change(&next)
         let after = next.disposition(for: id)
         dispositionRequests[id, default: 0] += 1
-        if after == .collected && (before == .untouched || before == .pinned) { preparing.insert(id) }
-        if after != .collected { preparing.remove(id); unplaced.remove(id) }
+        if after == .collected && (before == .untouched || before == .pinned) {
+            unplaced.remove(id); unplacedRetryAt.removeValue(forKey: id); unplacedAttempts.removeValue(forKey: id)
+            preparing.insert(id)
+        }
+        if after != .collected {
+            preparing.remove(id); unplaced.remove(id)
+            unplacedRetryAt.removeValue(forKey: id); unplacedAttempts.removeValue(forKey: id)
+            notificationRevealState.clear(id)
+        }
         update { $0 = next }
         scheduleRulePreparation()
     }
     private func scheduleRulePreparation() {
-        guard ruleTask == nil, orderingTask == nil, imageTask == nil,
+        guard initialCaptureComplete, ruleTask == nil, orderingTask == nil, imageTask == nil,
               !preparing.isEmpty, !stopping, !paused, trusted else { return }
         ruleTask = Task { [weak self] in
             guard let self else { return }
@@ -409,16 +484,15 @@ final class AppModel: ObservableObject {
                 if self.imageAccess && self.collected.allSatisfy({ self.menuImages[$0.id] != nil }) { self.imageMessage = nil }
                 self.applyVisibility(); self.presentationChanged?(); self.reconcilePinnedOrder()
             }
-            // A picker/context-menu action must finish before sending any native drag events.
             try? await Task.sleep(for: .milliseconds(180))
             for _ in 0..<100 {
                 if self.ownMenusTracking == 0 && !self.menuIsActive && !self.capturingImages &&
-                    self.visibilitySettled && NSEvent.pressedMouseButtons == 0 { break }
+                    self.visibilitySettled { break }
                 if Task.isCancelled { return }
                 try? await Task.sleep(for: .milliseconds(50))
             }
             guard !Task.isCancelled, self.ownMenusTracking == 0, !self.menuIsActive, !self.capturingImages,
-                  self.visibilitySettled, NSEvent.pressedMouseButtons == 0 else { return }
+                  self.visibilitySettled else { return }
             while let id = self.preparing.sorted().first {
                 guard !Task.isCancelled, !self.paused else { return }
                 guard self.configuration.disposition(for: id) == .collected else { self.preparing.remove(id); continue }
@@ -435,33 +509,55 @@ final class AppModel: ObservableObject {
                 // An assertion completion precedes the menu-bar animation. Wait for
                 // its AX items to return before treating an empty snapshot as failure.
                 var visible = await self.freshItems(id)
-                let expected = self.items.filter { $0.bundle == id }.count
-                for _ in 0..<20 {
+                let expected = max(1, self.items.filter { $0.bundle == id }.count)
+                for _ in 0..<30 {
                     if !visible.isEmpty, visible.count >= expected,
-                       visible.allSatisfy({ $0.frame.width > 1 && $0.frame.height > 1 }) { break }
+                       visible.allSatisfy({ self.canOpenOriginal($0) }) { break }
                     guard !Task.isCancelled else { return }
                     try? await Task.sleep(for: .milliseconds(50))
                     visible = await self.freshItems(id)
                 }
                 let fresh = visible
+                if !fresh.isEmpty {
+                    let refreshedIDs = Set(fresh.map(\.id))
+                    self.items = self.items.filter { !refreshedIDs.contains($0.id) } + fresh
+                }
                 let ready = !fresh.isEmpty && fresh.allSatisfy { self.canOpenOriginal($0) }
                 var imagesReady = !self.imageAccess
                 if self.imageAccess, let captured = try? await MenuBarImages.captureStable(fresh, refresh: self.freshItems) {
-                    for (key, image) in captured { self.menuImages[key] = image }
-                    imagesReady = !fresh.isEmpty && fresh.allSatisfy { captured[$0.id] != nil }
+                    self.storeCapturedImages(captured, for: fresh)
+                    imagesReady = !fresh.isEmpty && fresh.allSatisfy { captured[$0.id] != nil || self.menuImages[$0.id] != nil }
                 }
                 guard !Task.isCancelled else { return }
                 guard request == (self.dispositionRequests[id] ?? 0) else { continue }
-                if ready { self.preparedBundles.insert(id) }
                 let missingImages = !imagesReady
-                if !ready || missingImages {
+                if ready && !missingImages {
+                    self.preparedBundles.insert(id)
+                    self.unplaced.remove(id)
+                    self.unplacedRetryAt.removeValue(forKey: id)
+                    self.unplacedAttempts.removeValue(forKey: id)
+                    let snapshots = self.items.map {
+                        StatusItemSnapshot(id: $0.id, bundle: $0.bundle, pid: $0.pid,
+                                           label: $0.label, appName: $0.appName, width: Double($0.frame.width))
+                    }
+                    _ = self.notificationRevealState.observe(
+                        snapshots,
+                        preparedBundles: self.preparedBundles,
+                        now: ProcessInfo.processInfo.systemUptime,
+                        configuration: self.configuration
+                    )
+                } else {
+                    if ready { self.preparedBundles.insert(id) }
+                    let attempts = (self.unplacedAttempts[id] ?? 0) + 1
+                    self.unplacedAttempts[id] = attempts
+                    self.unplacedRetryAt[id] = Date().addingTimeInterval(min(30, Double(attempts) * 3))
                     self.unplaced.insert(id)
                     let name = fresh.first?.appName ?? visible.first?.appName ?? self.items.first(where: { $0.bundle == id })?.appName ?? id
                     self.rulePreparationMessage = missingImages
                         ? "\(name) 的图标图像尚未读取，暂时只保留原生显示。可点击刷新图标重试。"
                         : "\(name) 尚未完成收纳准备，暂时只保留原生显示。关闭菜单后可点击刷新重试。"
                     self.message = self.rulePreparationMessage
-                } else { self.unplaced.remove(id) }
+                }
                 self.preparing.remove(id)
             }
             if self.unplaced.isEmpty, self.message == self.rulePreparationMessage {
@@ -523,12 +619,48 @@ final class AppModel: ObservableObject {
                 }
                 let newBundles = Set(newlyCollected.map(\.bundle))
                 self.preparedBundles.subtract(newBundles)
+                self.unplaced.subtract(newBundles)
                 self.preparing.formUnion(newBundles)
-                for bundle in newBundles { self.dispositionRequests[bundle, default: 0] += 1 }
-                for item in newlyCollected { self.menuImages.removeValue(forKey: item.id) }
+                for bundle in newBundles {
+                    self.dispositionRequests[bundle, default: 0] += 1
+                    self.unplacedRetryAt.removeValue(forKey: bundle)
+                    self.unplacedAttempts.removeValue(forKey: bundle)
+                    self.notificationRevealState.clear(bundle)
+                }
                 let ids = Set(discovered.map(\.id))
                 self.items = discovered + self.items.filter { running.contains($0.pid) && !ids.contains($0.id) && self.configuration.disposition(for: $0.bundle) != .untouched }
                 self.systemItems = self.items.filter { SystemItemPolicy.isSystem($0.bundle) }
+                if self.initialCaptureComplete {
+                    let now = Date()
+                    for bundle in Set(discovered.map(\.bundle)) where self.configuration.disposition(for: bundle) == .collected {
+                        if (!self.preparedBundles.contains(bundle) || self.unplaced.contains(bundle)),
+                           !self.preparing.contains(bundle),
+                           now >= (self.unplacedRetryAt[bundle] ?? .distantPast) {
+                            self.preparing.insert(bundle)
+                        }
+                    }
+                }
+                for item in self.items where self.configuration.disposition(for: item.bundle) == .collected {
+                    let idle = item.label.trimmingCharacters(in: .whitespacesAndNewlines) == item.appName
+                    if idle, let clean = self.cleanMenuImages[item.id],
+                       abs((self.menuImages[item.id]?.width ?? 0) - clean.width) >= 1 {
+                        self.menuImages[item.id] = clean
+                    }
+                }
+                let snapshots = self.items.map {
+                    StatusItemSnapshot(id: $0.id, bundle: $0.bundle, pid: $0.pid,
+                                       label: $0.label, appName: $0.appName, width: Double($0.frame.width))
+                }
+                let triggered = self.notificationRevealState.observe(
+                    snapshots,
+                    preparedBundles: self.preparedBundles,
+                    now: ProcessInfo.processInfo.systemUptime,
+                    configuration: self.configuration
+                )
+                if !triggered.isEmpty {
+                    self.scheduleNotificationExpiration()
+                    self.captureNotificationImages(for: triggered)
+                }
                 let topology = self.items.map { "\($0.id):\($0.pid)" }.sorted().joined(separator: "|")
                 if topology != self.discoveryTopology {
                     self.discoveryTopology = topology
@@ -545,6 +677,7 @@ final class AppModel: ObservableObject {
 
     func refreshManagedItems() {
         applicationMetadata.removeAll(); applicationMetadataAttempts.removeAll()
+        unplacedRetryAt.removeAll(); unplacedAttempts.removeAll()
         preparing.formUnion(unplaced); unplaced.removeAll()
         scan(); refreshImages(force: true); scheduleRulePreparation()
     }
@@ -569,12 +702,12 @@ final class AppModel: ObservableObject {
             // Image permission affects glyphs only. Native placement and visibility must still initialize.
             if initialCaptureComplete { return }
         }
-        let ids = Set(items.map(\.id))
-        guard force || !initialCaptureComplete || ids != requestedImageIDs || Date().timeIntervalSince(imagesCapturedAt) > 60 else { return }
-        requestedImageIDs = ids
         // Hidden icons keep their last genuine glyph. Sampling them by revealing native items
         // would reflow Bar and the unmodified icons to its right.
         let visible = items.filter { lease == nil || [.untouched, .pinned].contains(configuration.disposition(for: $0.bundle)) }
+        let ids = Set(visible.map(\.id))
+        guard force || !initialCaptureComplete || ids != requestedImageIDs || Date().timeIntervalSince(imagesCapturedAt) > 60 else { return }
+        requestedImageIDs = ids
         capturingImages = true
         imageTask = Task { [weak self] in
             guard let self else { return }
@@ -584,14 +717,41 @@ final class AppModel: ObservableObject {
             }
             do {
                 var candidates = visible
-                if !self.initialCaptureComplete && !self.paused {
+                let initialPass = !self.initialCaptureComplete && !self.paused
+                if initialPass {
                     candidates = []
                     for bundle in Set(visible.map(\.bundle)).sorted() { candidates += await self.freshItems(bundle) }
                 }
+                if self.imageAccess {
+                    let captured = try await MenuBarImages.captureStable(candidates, refresh: self.freshItems)
+                    if Task.isCancelled { return }
+                    self.storeCapturedImages(captured, for: candidates)
+                }
+                if initialPass {
+                    let grouped = Dictionary(grouping: candidates, by: \.bundle)
+                    for (bundle, bundleItems) in grouped where self.configuration.disposition(for: bundle) == .collected {
+                        let ready = !bundleItems.isEmpty && bundleItems.allSatisfy { self.canOpenOriginal($0) }
+                        let hasImages = !self.imageAccess || bundleItems.allSatisfy { self.menuImages[$0.id] != nil }
+                        if ready && hasImages {
+                            self.preparedBundles.insert(bundle)
+                            self.preparing.remove(bundle)
+                            self.unplaced.remove(bundle)
+                        } else {
+                            self.preparing.insert(bundle)
+                        }
+                    }
+                    let snapshots = self.items.map {
+                        StatusItemSnapshot(id: $0.id, bundle: $0.bundle, pid: $0.pid,
+                                           label: $0.label, appName: $0.appName, width: Double($0.frame.width))
+                    }
+                    _ = self.notificationRevealState.observe(
+                        snapshots,
+                        preparedBundles: self.preparedBundles,
+                        now: ProcessInfo.processInfo.systemUptime,
+                        configuration: self.configuration
+                    )
+                }
                 guard self.imageAccess else { return }
-                let captured = try await MenuBarImages.captureStable(candidates, refresh: self.freshItems)
-                if Task.isCancelled { return }
-                for (id, image) in captured { self.menuImages[id] = image }
                 self.imageMessage = self.collected.contains(where: { self.menuImages[$0.id] == nil })
                     ? "部分图标尚无图像。可暂停管理后刷新一次，再恢复管理；刷新不会临时展开原生图标。" : nil
             } catch { self.imageMessage = "无法读取菜单栏图像：\(error.localizedDescription)" }
@@ -608,7 +768,9 @@ final class AppModel: ObservableObject {
         paused = value
         if value {
             openingTask?.cancel(); finishMenu()
-            orderingTask?.cancel(); imageTask?.cancel(); ruleTask?.cancel(); NativePlacement.releaseInput()
+            orderingTask?.cancel(); imageTask?.cancel(); ruleTask?.cancel()
+            notificationWakeTask?.cancel(); notificationCaptureTask?.cancel()
+            NativePlacement.releaseInput()
             checkedOrder = ""; releaseVisibility()
         } else {
             engineFailed = false; initialCaptureComplete = false; preparedBundles = []
@@ -618,14 +780,16 @@ final class AppModel: ObservableObject {
 
     func applyVisibility() {
         guard !stopping, initialCaptureComplete, trusted, engineAvailable, !paused, !engineFailed else { releaseVisibility(); return }
+        notificationRevealState.pruneExpired(now: ProcessInfo.processInfo.systemUptime, configuration: configuration)
         let apps = NSWorkspace.shared.runningApplications
         var processes: [String: Set<Int32>] = [:], discovered: [String: Set<Int32>] = [:]
         for app in apps { if let id = app.bundleIdentifier { processes[id, default: []].insert(app.processIdentifier) } }
         for item in items { discovered[item.bundle, default: []].insert(item.pid) }
         let running = Set(processes.keys)
         let missing = VisibilityPolicy.awaitingDiscovery(running: processes, discovered: discovered, configuration: configuration)
+        let notified = activeNotificationBundles
         let pending = Set(preparing.filter { !preparedBundles.contains($0) || $0 == preparationBundle })
-            .union(unplaced).union(missing)
+            .union(unplaced).union(missing).union(notified)
         let temporary = pending.union(temporaryBundle.map { [$0] } ?? [])
         let systemAllowed = SystemItemPolicy.allowed(configuration: configuration, temporary: temporary)
         let applicationAllowed = VisibilityPolicy.allowed(running: running, configuration: configuration,
@@ -693,9 +857,16 @@ final class AppModel: ObservableObject {
                 if self.visibilitySettled || Task.isCancelled { break }
                 try? await Task.sleep(for: .milliseconds(50))
             }
+            guard !Task.isCancelled, self.visibilitySettled else { return }
+            var fresh = await self.freshItems(item.bundle).first(where: { $0.id == item.id })
+            for _ in 0..<20 {
+                if let candidate = fresh, self.canOpenOriginal(candidate) { break }
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(for: .milliseconds(50))
+                fresh = await self.freshItems(item.bundle).first(where: { $0.id == item.id })
+            }
             guard !Task.isCancelled else { return }
-            guard self.visibilitySettled, let fresh = await self.freshItems(item.bundle).first(where: { $0.id == item.id }),
-                  self.canOpenOriginal(fresh) else {
+            guard let fresh, self.canOpenOriginal(fresh) else {
                 self.message = "\(item.appName) 的原生图标尚未恢复到安全位置，请刷新图标后重试。"
                 self.finishMenu(); return
             }
@@ -800,6 +971,7 @@ final class AppModel: ObservableObject {
     func shutdown() {
         stopping = true
         workspaceTask?.cancel(); orderingWakeTask?.cancel()
+        notificationWakeTask?.cancel(); notificationCaptureTask?.cancel()
         openingTask?.cancel()
         NativePlacement.releaseInput()
         if let appearanceObserver { DistributedNotificationCenter.default().removeObserver(appearanceObserver) }
